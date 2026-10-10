@@ -130,7 +130,7 @@ jobs:
         working-directory: ${{ env.APK_BUILD_DIR }}/app
         run: |
           echo "Switching between debug and release builds requires uninstalling the existing app because the signing keys differ."
-          flutter build apk --release --split-per-abi
+          flutter build apk --release --target-platform android-arm,android-arm64 --split-per-abi
 
       - name: Verify release APK signatures and ABIs
         if: ${{ inputs.build_type == 'release' }}
@@ -140,7 +140,10 @@ jobs:
           AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
           test -n "$APKSIGNER"
           test -n "$AAPT"
-          for apk in build/app/outputs/flutter-apk/app-*-release.apk; do
+          for apk in \
+            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
+            build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk; do
+            test -s "$apk"
             echo "Verifying signature: $apk"
             "$APKSIGNER" verify --print-certs "$apk"
             echo "Native-code ABIs: $apk"
