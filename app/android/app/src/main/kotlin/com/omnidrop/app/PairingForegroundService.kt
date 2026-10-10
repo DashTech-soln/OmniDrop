@@ -526,7 +526,8 @@ class PairingForegroundService : Service() {
     private fun releaseLocks() {
         listOfNotNull(wifiLock, wakeLock).forEach { lock ->
             try {
-                if (lock.isHeld) lock.release()
+                if (lock is WifiManager.WifiLock && lock.isHeld) lock.release()
+                if (lock is PowerManager.WakeLock && lock.isHeld) lock.release()
             } catch (error: Throwable) {
                 PairingNativeLog.append(this, "keepalive_locks", "Lock release failed: ${error.javaClass.simpleName}: ${error.message}")
             }
