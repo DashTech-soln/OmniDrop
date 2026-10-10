@@ -2,7 +2,22 @@ name: Build Android APK
 
 on:
   workflow_dispatch:
+    inputs:
+      build_type:
+        description: Android APK build type
+        type: choice
+        options:
+          - debug
+          - release
+        default: debug
+        required: true
   workflow_call:
+    inputs:
+      build_type:
+        description: Android APK build type
+        type: string
+        default: debug
+        required: false
 
 env:
   FLUTTER_VERSION: "3.41.9"
@@ -75,15 +90,29 @@ jobs:
         working-directory: ${{ env.APK_BUILD_DIR }}/app
         run: flutter pub get
 
-      - name: Build APK
+      - name: Build debug APKs
+        if: ${{ inputs.build_type != 'release' }}
         working-directory: ${{ env.APK_BUILD_DIR }}/app
         run: flutter build apk --debug --split-per-abi
 
-      - name: Upload APK
+      - name: Build release APK
+        if: ${{ inputs.build_type == 'release' }}
+        working-directory: ${{ env.APK_BUILD_DIR }}/app
+        run: flutter build apk --release --target-platform android-arm64
+
+      - name: Upload debug APKs
         uses: actions/upload-artifact@v6
+        if: ${{ inputs.build_type != 'release' }}
         with:
-          name: apk-result
+          name: apk-result-debug
           path: |
             ${{ env.APK_BUILD_DIR }}/app/build/app/outputs/flutter-apk/app-armeabi-v7a-debug.apk
             ${{ env.APK_BUILD_DIR }}/app/build/app/outputs/flutter-apk/app-arm64-v8a-debug.apk
             ${{ env.APK_BUILD_DIR }}/app/build/app/outputs/flutter-apk/app-x86_64-debug.apk
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v6
+        if: ${{ inputs.build_type == 'release' }}
+        with:
+          name: apk-result-release
+          path: ${{ env.APK_BUILD_DIR }}/app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk

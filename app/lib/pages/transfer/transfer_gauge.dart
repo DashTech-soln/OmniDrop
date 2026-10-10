@@ -13,52 +13,66 @@ class TransferGauge extends StatelessWidget {
   final double progress;
   final String elapsed;
   final String activeFile;
+  final double size;
 
   const TransferGauge({
     required this.progress,
     required this.elapsed,
     required this.activeFile,
+    this.size = 244,
     super.key,
   });
 
   @override
   Widget build(BuildContext context) {
     final normalizedProgress = progress.clamp(0.0, 1.0);
+    final scale = (size / 244).clamp(0.65, 1.0);
     return SizedBox(
-      width: 244,
-      height: 244,
+      width: size,
+      height: size,
       child: RepaintBoundary(
         child: Stack(
           alignment: Alignment.center,
           children: [
             CustomPaint(
-              size: const Size.square(244),
-              painter: TransferGaugePainter(progress: normalizedProgress, colors: Theme.of(context).colorScheme),
+              size: Size.square(size),
+              painter: TransferGaugePainter(
+                progress: normalizedProgress,
+                colors: Theme.of(context).colorScheme,
+              ),
             ),
             Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
                   '${(normalizedProgress * 100).round()}%',
-                  style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.w700, height: 1),
+                  style: Theme.of(context).textTheme.displaySmall?.copyWith(
+                    fontSize: (Theme.of(context).textTheme.displaySmall?.fontSize ?? 36) * scale,
+                    fontWeight: FontWeight.w700,
+                    height: 1,
+                  ),
                 ),
-                const SizedBox(height: 8),
+                SizedBox(height: 8 * scale),
                 Text(
                   elapsed,
                   style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    fontSize: (Theme.of(context).textTheme.labelLarge?.fontSize ?? 14) * scale,
                     fontFeatures: const [FontFeature.tabularFigures()],
                     letterSpacing: 1.2,
                   ),
                 ),
-                const SizedBox(height: 7),
+                SizedBox(height: 7 * scale),
                 SizedBox(
-                  width: 150,
+                  width: size * 0.62,
                   child: Text(
                     activeFile,
                     textAlign: TextAlign.center,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      fontSize: (Theme.of(context).textTheme.labelSmall?.fontSize ?? 11) * scale,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                   ),
                 ),
               ],

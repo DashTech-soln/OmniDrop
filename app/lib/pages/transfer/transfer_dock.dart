@@ -23,15 +23,11 @@ class TransferDock extends StatefulWidget {
   State<TransferDock> createState() => _TransferDockState();
 }
 
-class _TransferDockState extends State<TransferDock> with TickerProviderStateMixin {
+class _TransferDockState extends State<TransferDock> with SingleTickerProviderStateMixin {
   static const _size = 60.0;
   static const _edgePadding = 12.0;
   static const _topPadding = 8.0;
 
-  late final AnimationController _rotationController = AnimationController(
-    vsync: this,
-    duration: const Duration(seconds: 24),
-  );
   late final AnimationController _orbitController = AnimationController(
     vsync: this,
     duration: const Duration(seconds: 6),
@@ -55,19 +51,19 @@ class _TransferDockState extends State<TransferDock> with TickerProviderStateMix
 
   void _setAnimating(bool active) {
     if (active) {
-      unawaited(_rotationController.repeat());
       unawaited(_orbitController.repeat());
     } else {
-      _rotationController.stop();
       _orbitController.stop();
-      _rotationController.value = 0;
       _orbitController.value = 0;
     }
   }
 
   Offset _clampPosition(Offset position, Size size) {
     final maxLeft = math.max(_edgePadding, size.width - _size - _edgePadding);
-    final maxTop = math.max(_topPadding, size.height - widget.bottomClearance - _size);
+    final maxTop = math.max(
+      _topPadding,
+      size.height - widget.bottomClearance - _size,
+    );
     return Offset(
       position.dx.clamp(_edgePadding, maxLeft).toDouble(),
       position.dy.clamp(_topPadding, maxTop).toDouble(),
@@ -76,7 +72,6 @@ class _TransferDockState extends State<TransferDock> with TickerProviderStateMix
 
   @override
   void dispose() {
-    _rotationController.dispose();
     _orbitController.dispose();
     super.dispose();
   }
@@ -86,8 +81,14 @@ class _TransferDockState extends State<TransferDock> with TickerProviderStateMix
     return LayoutBuilder(
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
-        final maxLeft = math.max(_edgePadding, size.width - _size - _edgePadding);
-        final maxTop = math.max(_topPadding, size.height - widget.bottomClearance - _size);
+        final maxLeft = math.max(
+          _edgePadding,
+          size.width - _size - _edgePadding,
+        );
+        final maxTop = math.max(
+          _topPadding,
+          size.height - widget.bottomClearance - _size,
+        );
         if (_lastSize != size) {
           _lastSize = size;
           _position = _position == null ? Offset(maxLeft, math.max(_topPadding, maxTop - 100)) : _clampPosition(_position!, size);
@@ -98,74 +99,82 @@ class _TransferDockState extends State<TransferDock> with TickerProviderStateMix
           fit: StackFit.expand,
           children: [
             AnimatedPositioned(
-              key: const ValueKey('transfer-dock-position'),
+              key: widget.key ?? const ValueKey('transfer-dock'),
               left: position.dx,
               top: position.dy,
               duration: const Duration(milliseconds: 260),
               curve: Curves.easeOutCubic,
               child: GestureDetector(
-                key: const ValueKey('transfer-dock'),
                 onTap: widget.onTap,
                 onPanUpdate: (details) {
                   setState(() {
-                    _position = _clampPosition(_position! + details.delta, size);
+                    _position = _clampPosition(
+                      _position! + details.delta,
+                      size,
+                    );
                   });
                 },
                 onPanEnd: (_) {
                   setState(() {
                     final left = _position!.dx + _size / 2 < size.width / 2 ? _edgePadding : maxLeft;
-                    _position = _clampPosition(Offset(left, _position!.dy), size);
+                    _position = _clampPosition(
+                      Offset(left, _position!.dy),
+                      size,
+                    );
                   });
                 },
                 child: Semantics(
                   button: true,
                   label: '${widget.count} ${TransferStrings.selected}',
                   child: RepaintBoundary(
-                    child: AnimatedBuilder(
-                      animation: _rotationController,
-                      builder: (context, child) {
-                        final angle = widget.active ? _rotationController.value * math.pi * 2 : 0.0;
-                        return Transform.rotate(angle: angle, child: child);
-                      },
-                      child: SizedBox.square(
-                        dimension: _size,
-                        child: Stack(
-                          clipBehavior: Clip.none,
-                          alignment: Alignment.center,
-                          children: [
-                            DecoratedBox(
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.84),
-                                border: Border.all(color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.55)),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.18),
-                                    blurRadius: 14,
-                                  ),
-                                ],
+                    child: SizedBox.square(
+                      dimension: _size,
+                      child: Stack(
+                        clipBehavior: Clip.none,
+                        alignment: Alignment.center,
+                        children: [
+                          DecoratedBox(
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.surface.withValues(alpha: 0.84),
+                              border: Border.all(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.primary.withValues(alpha: 0.55),
                               ),
-                              child: SizedBox.square(
-                                dimension: _size,
-                                child: Center(
-                                  child: Text(
-                                    '${widget.count}',
-                                    key: const ValueKey('transfer-dock-count'),
-                                    style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.primary.withValues(alpha: 0.18),
+                                  blurRadius: 14,
+                                ),
+                              ],
+                            ),
+                            child: SizedBox.square(
+                              dimension: _size,
+                              child: Center(
+                                child: Text(
+                                  '${widget.count}',
+                                  key: const ValueKey('transfer-dock-count'),
+                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                            ),
+                          ),
+                          if (widget.active)
+                            Positioned.fill(
+                              child: IgnorePointer(
+                                child: CustomPaint(
+                                  painter: _OrbitPainter(
+                                    animation: _orbitController,
                                   ),
                                 ),
                               ),
                             ),
-                            if (widget.active)
-                              Positioned.fill(
-                                child: IgnorePointer(
-                                  child: CustomPaint(
-                                    painter: _OrbitPainter(animation: _orbitController),
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
+                        ],
                       ),
                     ),
                   ),

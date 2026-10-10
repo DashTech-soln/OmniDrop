@@ -15,6 +15,7 @@ import 'package:localsend_app/pages/transfer/transfer_strings.dart';
 import 'package:localsend_app/provider/file_transfer_provider.dart';
 import 'package:localsend_app/provider/network/send_provider.dart';
 import 'package:localsend_app/provider/network/server/server_provider.dart';
+import 'package:localsend_app/provider/pairing/pairing_controller.dart';
 import 'package:localsend_app/util/native/open_file.dart';
 import 'package:localsend_app/util/native/platform_check.dart';
 import 'package:localsend_app/util/native/taskbar_helper.dart';
@@ -38,7 +39,9 @@ class TransferProgressPage extends StatefulWidget {
 
 class _TransferProgressPageState extends State<TransferProgressPage> with Refena {
   static const _refreshInterval = Duration(milliseconds: 100);
-  final ValueNotifier<_TransferSnapshot> _snapshot = ValueNotifier(const _TransferSnapshot.empty());
+  final ValueNotifier<_TransferSnapshot> _snapshot = ValueNotifier(
+    const _TransferSnapshot.empty(),
+  );
   Timer? _timer;
   DateTime? _lastTaskbarProgressUpdate;
   SessionStatus? _lastTaskbarStatus;
@@ -70,8 +73,12 @@ class _TransferProgressPageState extends State<TransferProgressPage> with Refena
         final completed = previous.sessions.every(
           (session) =>
               session.status == SessionStatus.finished ||
-              (session.files.any((file) => file.status == FileStatus.finished) &&
-                  session.files.every((file) => file.status == FileStatus.finished || file.status == FileStatus.skipped)),
+              (session.files.any(
+                    (file) => file.status == FileStatus.finished,
+                  ) &&
+                  session.files.every(
+                    (file) => file.status == FileStatus.finished || file.status == FileStatus.skipped,
+                  )),
         );
         _snapshot.value = previous.closed(completed: completed);
       }
@@ -83,7 +90,9 @@ class _TransferProgressPageState extends State<TransferProgressPage> with Refena
   }
 
   void _updateNativeFeedback(_TransferSnapshot snapshot) {
-    final active = snapshot.sessions.any((session) => session.status == SessionStatus.sending);
+    final active = snapshot.sessions.any(
+      (session) => session.status == SessionStatus.sending,
+    );
     if (checkPlatformIsNot([TargetPlatform.android]) && active != _wakelockEnabled) {
       _wakelockEnabled = active;
       unawaited(active ? WakelockPlus.enable() : WakelockPlus.disable());
@@ -91,7 +100,12 @@ class _TransferProgressPageState extends State<TransferProgressPage> with Refena
 
     final status = active
         ? SessionStatus.sending
-        : snapshot.sessions.firstWhereOrNull((session) => session.status != SessionStatus.finished)?.status ?? snapshot.sessions.firstOrNull?.status;
+        : snapshot.sessions
+                  .firstWhereOrNull(
+                    (session) => session.status != SessionStatus.finished,
+                  )
+                  ?.status ??
+              snapshot.sessions.firstOrNull?.status;
     if (status != null && status != _lastTaskbarStatus) {
       _lastTaskbarStatus = status;
       unawaited(TaskbarHelper.visualizeStatus(status));
@@ -103,20 +117,32 @@ class _TransferProgressPageState extends State<TransferProgressPage> with Refena
         _lastTaskbarProgressUpdate = now;
         unawaited(
           snapshot.total > 0
-              ? TaskbarHelper.setProgressBar(snapshot.transferred, snapshot.total)
+              ? TaskbarHelper.setProgressBar(
+                  snapshot.transferred,
+                  snapshot.total,
+                )
               : TaskbarHelper.setProgressBar(0, double.maxFinite.toInt()),
         );
       }
     }
   }
 
-  _TransferSessionSnapshot _fromSendSession(SendSessionState session, FileTransferNotifier transferState) {
+  _TransferSessionSnapshot _fromSendSession(
+    SendSessionState session,
+    FileTransferNotifier transferState,
+  ) {
     final files = <_TransferFileSnapshot>[
       for (final sendingFile in session.files.values)
         _TransferFileSnapshot(
           file: sendingFile.file,
-          status: transferState.getStatus(sessionId: session.sessionId, fileId: sendingFile.file.id),
-          progress: transferState.getProgress(sessionId: session.sessionId, fileId: sendingFile.file.id),
+          status: transferState.getStatus(
+            sessionId: session.sessionId,
+            fileId: sendingFile.file.id,
+          ),
+          progress: transferState.getProgress(
+            sessionId: session.sessionId,
+            fileId: sendingFile.file.id,
+          ),
           errorMessage: sendingFile.errorMessage,
           sendingFile: sendingFile,
           receivingFile: null,
@@ -138,13 +164,22 @@ class _TransferProgressPageState extends State<TransferProgressPage> with Refena
     );
   }
 
-  _TransferSessionSnapshot _fromReceiveSession(ReceiveSessionState session, FileTransferNotifier transferState) {
+  _TransferSessionSnapshot _fromReceiveSession(
+    ReceiveSessionState session,
+    FileTransferNotifier transferState,
+  ) {
     final files = <_TransferFileSnapshot>[
       for (final receivingFile in session.files.values)
         _TransferFileSnapshot(
           file: receivingFile.file,
-          status: transferState.getStatus(sessionId: session.sessionId, fileId: receivingFile.file.id),
-          progress: transferState.getProgress(sessionId: session.sessionId, fileId: receivingFile.file.id),
+          status: transferState.getStatus(
+            sessionId: session.sessionId,
+            fileId: receivingFile.file.id,
+          ),
+          progress: transferState.getProgress(
+            sessionId: session.sessionId,
+            fileId: receivingFile.file.id,
+          ),
           errorMessage: receivingFile.errorMessage,
           sendingFile: null,
           receivingFile: receivingFile,
@@ -238,145 +273,267 @@ class _TransferProgressPageState extends State<TransferProgressPage> with Refena
       },
       child: Scaffold(
         body: SafeArea(
-          child: Column(
-            children: [
-              ValueListenableBuilder(
-                valueListenable: _snapshot,
-                builder: (context, snapshot, _) {
-                  final sending = snapshot.sessions.any((session) => !session.receiving);
-                  return Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-                    child: Row(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final headerHeight = math.min(constraints.maxHeight / 3, 250.0);
+              return Column(
+                children: [
+                  SizedBox(
+                    height: headerHeight,
+                    child: Column(
                       children: [
-                        Expanded(
-                          child: Text(
-                            sending ? TransferStrings.sending : TransferStrings.receiving,
-                            style: Theme.of(context).textTheme.titleLarge,
-                          ),
-                        ),
-                        if (!snapshot.isTerminal)
-                          TextButton.icon(
-                            onPressed: _minimize,
-                            icon: const Icon(Icons.keyboard_arrow_down),
-                            label: const Text(TransferStrings.minimize),
-                          )
-                        else
-                          TextButton.icon(
-                            onPressed: _closeCompleted,
-                            icon: const Icon(Icons.close),
-                            label: const Text(TransferStrings.close),
-                          ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-              Expanded(
-                child: CustomScrollView(
-                  slivers: [
-                    SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(14, 6, 14, 8),
-                      sliver: SliverList(
-                        delegate: SliverChildListDelegate([
-                          ValueListenableBuilder(
-                            valueListenable: _snapshot,
-                            builder: (context, snapshot, _) => Center(
-                              child: TransferGauge(
-                                progress: snapshot.progress,
-                                elapsed: snapshot.elapsed,
-                                activeFile: snapshot.activeFile,
-                              ),
-                            ),
-                          ),
-                          ValueListenableBuilder(
-                            valueListenable: _snapshot,
-                            builder: (context, snapshot, _) => snapshot.isTerminal
-                                ? Padding(
-                                    padding: const EdgeInsets.symmetric(vertical: 8),
-                                    child: Center(
-                                      child: Text(
-                                        snapshot.statusMessage,
-                                        textAlign: TextAlign.center,
-                                        style: Theme.of(context).textTheme.titleMedium,
-                                      ),
-                                    ),
-                                  )
-                                : const SizedBox.shrink(),
-                          ),
-                          ValueListenableBuilder(
-                            valueListenable: _snapshot,
-                            builder: (context, snapshot, _) => snapshot.errorMessage == null
-                                ? const SizedBox.shrink()
-                                : Padding(
-                                    padding: const EdgeInsets.only(bottom: 10),
-                                    child: SelectableText(
-                                      snapshot.errorMessage!,
-                                      style: TextStyle(color: Theme.of(context).colorScheme.warning),
+                        ValueListenableBuilder(
+                          valueListenable: _snapshot,
+                          builder: (context, snapshot, _) {
+                            final sending = snapshot.sessions.any(
+                              (session) => !session.receiving,
+                            );
+                            return Padding(
+                              padding: const EdgeInsets.fromLTRB(12, 4, 8, 0),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      sending ? TransferStrings.sending : TransferStrings.receiving,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.titleLarge,
                                     ),
                                   ),
-                          ),
-                          ValueListenableBuilder(
-                            valueListenable: _snapshot,
-                            builder: (context, snapshot, _) => Column(
-                              children: [
-                                _DeviceHeader(sessions: snapshot.sessions),
-                                _StatsGrid(snapshot: snapshot),
-                              ],
-                            ),
-                          ),
-                          ValueListenableBuilder(
-                            valueListenable: _snapshot,
-                            builder: (context, snapshot, _) => snapshot.sessions.length > 1 || snapshot.sessions.any((session) => session.receiving)
-                                ? _RecipientList(sessions: snapshot.sessions)
-                                : const SizedBox.shrink(),
-                          ),
-                          const SizedBox(height: 16),
-                          Text(TransferStrings.transferProgress, style: Theme.of(context).textTheme.titleMedium),
-                        ]),
-                      ),
-                    ),
-                    ValueListenableBuilder(
-                      valueListenable: _snapshot,
-                      builder: (context, snapshot, _) => SliverPadding(
-                        padding: const EdgeInsets.symmetric(horizontal: 14),
-                        sliver: SliverList(
-                          delegate: SliverChildBuilderDelegate(
-                            (context, index) {
-                              final entry = snapshot.fileEntries[index];
-                              return _TransferFileTile(
-                                entry: entry.file,
-                                onRetry: entry.file.status == FileStatus.failed && entry.file.sendingFile != null
-                                    ? () => ref
-                                          .notifier(sendProvider)
-                                          .sendFile(
-                                            sessionId: entry.session.sessionId,
-                                            file: entry.file.sendingFile!,
-                                            isRetry: true,
-                                          )
-                                    : null,
+                                  if (!snapshot.isTerminal)
+                                    TextButton.icon(
+                                      onPressed: _minimize,
+                                      icon: const Icon(
+                                        Icons.keyboard_arrow_down,
+                                      ),
+                                      label: const Text(
+                                        TransferStrings.minimize,
+                                      ),
+                                    )
+                                  else
+                                    TextButton.icon(
+                                      onPressed: _closeCompleted,
+                                      icon: const Icon(Icons.close),
+                                      label: const Text(TransferStrings.close),
+                                    ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                        Expanded(
+                          child: LayoutBuilder(
+                            builder: (context, headerConstraints) {
+                              final gaugeSize = math.min(
+                                150.0,
+                                math.min(
+                                  headerConstraints.maxHeight,
+                                  headerConstraints.maxWidth * 0.44,
+                                ),
+                              );
+                              return ValueListenableBuilder(
+                                valueListenable: _snapshot,
+                                builder: (context, snapshot, _) => Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 4,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: _CompactStatColumn(
+                                          stats: [
+                                            (
+                                              TransferStrings.percentage,
+                                              '${(snapshot.progress * 100).round()}%',
+                                            ),
+                                            (
+                                              TransferStrings.total,
+                                              snapshot.total.asReadableFileSize,
+                                            ),
+                                            (
+                                              TransferStrings.filesRemaining,
+                                              '${snapshot.filesRemaining}',
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      TransferGauge(
+                                        size: gaugeSize,
+                                        progress: snapshot.progress,
+                                        elapsed: snapshot.elapsed,
+                                        activeFile: snapshot.activeFile,
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Expanded(
+                                        child: _CompactStatColumn(
+                                          stats: [
+                                            (
+                                              TransferStrings.transferred,
+                                              snapshot.transferred.asReadableFileSize,
+                                            ),
+                                            (
+                                              TransferStrings.speed,
+                                              snapshot.speed == 0 ? TransferStrings.unavailable : '${snapshot.speed.asReadableFileSize}/s',
+                                            ),
+                                            (
+                                              TransferStrings.estimatedTime,
+                                              snapshot.eta,
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               );
                             },
-                            childCount: snapshot.fileEntries.length,
                           ),
                         ),
-                      ),
+                      ],
                     ),
-                    ValueListenableBuilder(
+                  ),
+                  const Divider(height: 1),
+                  ValueListenableBuilder(
+                    valueListenable: _snapshot,
+                    builder: (context, snapshot, _) => _DevicePill(sessions: snapshot.sessions),
+                  ),
+                  Expanded(
+                    child: ValueListenableBuilder(
                       valueListenable: _snapshot,
-                      builder: (context, snapshot, _) => SliverToBoxAdapter(
-                        child: snapshot.isTerminal
-                            ? const SizedBox.shrink()
-                            : Padding(
-                                padding: const EdgeInsets.fromLTRB(14, 12, 14, 24),
-                                child: OutlinedButton.icon(
-                                  onPressed: _cancelTransfer,
-                                  icon: const Icon(Icons.cancel_outlined),
-                                  label: const Text(TransferStrings.cancelTransfer),
+                      builder: (context, snapshot, _) => ListView(
+                        padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
+                        children: [
+                          if (snapshot.isTerminal)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              child: Center(
+                                child: Text(
+                                  snapshot.statusMessage,
+                                  textAlign: TextAlign.center,
+                                  style: Theme.of(
+                                    context,
+                                  ).textTheme.titleMedium,
                                 ),
                               ),
+                            ),
+                          if (snapshot.errorMessage != null)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 10),
+                              child: SelectableText(
+                                snapshot.errorMessage!,
+                                style: TextStyle(
+                                  color: Theme.of(context).colorScheme.warning,
+                                ),
+                              ),
+                            ),
+                          if (ref.read(pairingControllerProvider).multiRecipient &&
+                              snapshot.sessions.any(
+                                (session) => !session.receiving,
+                              ))
+                            _RecipientList(sessions: snapshot.sessions),
+                          Padding(
+                            padding: const EdgeInsets.only(top: 6, bottom: 4),
+                            child: Text(
+                              TransferStrings.transferProgress,
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                          ),
+                          for (final entry in snapshot.fileEntries)
+                            _TransferFileTile(
+                              entry: entry.file,
+                              onRetry: entry.file.status == FileStatus.failed && entry.file.sendingFile != null
+                                  ? () => ref
+                                        .notifier(sendProvider)
+                                        .sendFile(
+                                          sessionId: entry.session.sessionId,
+                                          file: entry.file.sendingFile!,
+                                          isRetry: true,
+                                        )
+                                  : null,
+                            ),
+                          if (!snapshot.isTerminal)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 12),
+                              child: OutlinedButton.icon(
+                                onPressed: _cancelTransfer,
+                                icon: const Icon(Icons.cancel_outlined),
+                                label: const Text(
+                                  TransferStrings.cancelTransfer,
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
                     ),
-                  ],
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CompactStatColumn extends StatelessWidget {
+  final List<(String, String)> stats;
+
+  const _CompactStatColumn({required this.stats});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        for (var index = 0; index < stats.length; index++)
+          Expanded(
+            child: Padding(
+              padding: EdgeInsets.only(
+                bottom: index == stats.length - 1 ? 0 : 4,
+              ),
+              child: _CompactStat(
+                label: stats[index].$1,
+                value: stats[index].$2,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _DevicePill extends StatelessWidget {
+  final List<_TransferSessionSnapshot> sessions;
+
+  const _DevicePill({required this.sessions});
+
+  @override
+  Widget build(BuildContext context) {
+    final names = sessions.map((session) => session.deviceName).where((name) => name.isNotEmpty).toList();
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Theme.of(
+            context,
+          ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.7),
+          borderRadius: BorderRadius.circular(24),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            children: [
+              const Icon(Icons.devices, size: 17),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '${TransferStrings.device}: ${names.isEmpty ? TransferStrings.unavailable : names.join(', ')}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ],
@@ -387,82 +544,11 @@ class _TransferProgressPageState extends State<TransferProgressPage> with Refena
   }
 }
 
-class _StatsGrid extends StatelessWidget {
-  final _TransferSnapshot snapshot;
-
-  const _StatsGrid({required this.snapshot});
-
-  @override
-  Widget build(BuildContext context) {
-    final stats = [
-      (TransferStrings.percentage, '${(snapshot.progress * 100).round()}%'),
-      (TransferStrings.transferred, snapshot.transferred.asReadableFileSize),
-      (TransferStrings.total, snapshot.total.asReadableFileSize),
-      (TransferStrings.speed, snapshot.speed == 0 ? TransferStrings.unavailable : '${snapshot.speed.asReadableFileSize}/s'),
-      (TransferStrings.filesRemaining, '${snapshot.filesRemaining}'),
-      (TransferStrings.estimatedTime, snapshot.eta),
-      (TransferStrings.device, snapshot.deviceNames.join(', ')),
-    ];
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final itemWidth = (constraints.maxWidth - 10) / 2;
-        return Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: [
-            for (final (label, value) in stats)
-              SizedBox(
-                width: itemWidth,
-                child: _StatCard(label: label, value: value),
-              ),
-          ],
-        );
-      },
-    );
-  }
-}
-
-class _DeviceHeader extends StatelessWidget {
-  final List<_TransferSessionSnapshot> sessions;
-
-  const _DeviceHeader({required this.sessions});
-
-  @override
-  Widget build(BuildContext context) {
-    if (sessions.isEmpty) return const SizedBox.shrink();
-    final names = sessions.map((session) => session.deviceName).where((name) => name.isNotEmpty).toList();
-    final firstName = names.isEmpty ? '?' : names.first;
-    final sending = sessions.any((session) => !session.receiving);
-    return Padding(
-      padding: const EdgeInsets.only(top: 4, bottom: 12),
-      child: Row(
-        children: [
-          CircleAvatar(
-            radius: 19,
-            backgroundColor: Theme.of(context).colorScheme.secondaryContainer,
-            child: Text(firstName.substring(0, 1).toUpperCase()),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(sending ? TransferStrings.receivingDevice : TransferStrings.senderDevice, style: Theme.of(context).textTheme.labelSmall),
-                Text(names.join(', '), maxLines: 1, overflow: TextOverflow.ellipsis),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _StatCard extends StatelessWidget {
+class _CompactStat extends StatelessWidget {
   final String label;
   final String value;
 
-  const _StatCard({required this.label, required this.value});
+  const _CompactStat({required this.label, required this.value});
 
   @override
   Widget build(BuildContext context) {
@@ -470,20 +556,32 @@ class _StatCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.72),
         borderRadius: BorderRadius.circular(glassRadiusCard),
-        border: Border.all(color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.16)),
+        border: Border.all(
+          color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.16),
+        ),
       ),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
         child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.labelSmall),
-            const SizedBox(height: 4),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(
+                context,
+              ).textTheme.labelSmall?.copyWith(fontSize: 9),
+            ),
             Text(
               value.isEmpty ? TransferStrings.unavailable : value,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.titleSmall,
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ],
         ),
@@ -503,7 +601,10 @@ class _RecipientList extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 18),
-        Text(TransferStrings.receivingDevice, style: Theme.of(context).textTheme.titleMedium),
+        Text(
+          TransferStrings.devices,
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
         const SizedBox(height: 6),
         for (final session in sessions)
           Padding(
@@ -512,16 +613,27 @@ class _RecipientList extends StatelessWidget {
               children: [
                 CircleAvatar(
                   radius: 17,
-                  backgroundColor: Theme.of(context).colorScheme.secondaryContainer,
-                  child: Text(session.deviceName.isEmpty ? '?' : session.deviceName.characters.first.toUpperCase()),
+                  backgroundColor: Theme.of(
+                    context,
+                  ).colorScheme.secondaryContainer,
+                  child: Text(
+                    session.deviceName.isEmpty ? '?' : session.deviceName.characters.first.toUpperCase(),
+                  ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(session.deviceName, maxLines: 1, overflow: TextOverflow.ellipsis),
-                      Text(session.statusLabel, style: Theme.of(context).textTheme.bodySmall),
+                      Text(
+                        session.deviceName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      Text(
+                        session.statusLabel,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
                     ],
                   ),
                 ),
@@ -581,7 +693,10 @@ class _TransferFileTile extends StatelessWidget {
                   Row(
                     children: [
                       Expanded(
-                        child: Text(statusLabel, style: TextStyle(color: color)),
+                        child: Text(
+                          statusLabel,
+                          style: TextStyle(color: color),
+                        ),
                       ),
                       if (entry.errorMessage != null)
                         IconButton(
@@ -593,7 +708,11 @@ class _TransferFileTile extends StatelessWidget {
                               builder: (_) => ErrorDialog(error: entry.errorMessage!),
                             );
                           },
-                          icon: Icon(Icons.info_outline, color: color, size: 19),
+                          icon: Icon(
+                            Icons.info_outline,
+                            color: color,
+                            size: 19,
+                          ),
                         ),
                     ],
                   ),
@@ -667,8 +786,14 @@ class _TransferSnapshot {
       deviceNames = const [],
       fileEntries = const [];
 
-  factory _TransferSnapshot.fromSessions(List<_TransferSessionSnapshot> sessions, int now) {
-    final transferred = sessions.fold<int>(0, (sum, session) => sum + session.transferred);
+  factory _TransferSnapshot.fromSessions(
+    List<_TransferSessionSnapshot> sessions,
+    int now,
+  ) {
+    final transferred = sessions.fold<int>(
+      0,
+      (sum, session) => sum + session.transferred,
+    );
     final total = sessions.fold<int>(0, (sum, session) => sum + session.total);
     final statuses = sessions.map((session) => session.status).toList();
     final terminal =
@@ -695,7 +820,9 @@ class _TransferSnapshot {
     final failed =
         statuses.contains(SessionStatus.finishedWithErrors) ||
         statuses.contains(SessionStatus.tooManyAttempts) ||
-        sessions.any((session) => session.files.any((file) => file.status == FileStatus.failed));
+        sessions.any(
+          (session) => session.files.any((file) => file.status == FileStatus.failed),
+        );
     final cancelled = statuses.contains(SessionStatus.canceledBySender) || statuses.contains(SessionStatus.canceledByReceiver);
     final errorMessage = sessions.map((session) => session.errorMessage).whereType<String>().firstOrNull;
     final activeFile =
@@ -727,7 +854,10 @@ class _TransferSnapshot {
       transferred: transferred,
       total: total,
       speed: speed,
-      filesRemaining: sessions.fold<int>(0, (sum, session) => sum + session.filesRemaining),
+      filesRemaining: sessions.fold<int>(
+        0,
+        (sum, session) => sum + session.filesRemaining,
+      ),
       progress: total == 0 ? (terminal && !failed && !cancelled ? 1 : 0) : (transferred / total).clamp(0.0, 1.0),
       elapsed: _formatDuration(Duration(milliseconds: elapsedMs)),
       eta: remainingSeconds == null ? TransferStrings.unavailable : _formatDuration(Duration(seconds: remainingSeconds)),
@@ -789,9 +919,16 @@ class _TransferSessionSnapshot {
     (sum, file) => sum + (file.status == FileStatus.skipped ? 0 : (file.progress * file.file.size).round()),
   );
 
-  int get total => files.fold<int>(0, (sum, file) => sum + (file.status == FileStatus.skipped ? 0 : file.file.size));
+  int get total => files.fold<int>(
+    0,
+    (sum, file) => sum + (file.status == FileStatus.skipped ? 0 : file.file.size),
+  );
 
-  int get filesRemaining => files.where((file) => file.status == FileStatus.queue || file.status == FileStatus.sending).length;
+  int get filesRemaining => files
+      .where(
+        (file) => file.status == FileStatus.queue || file.status == FileStatus.sending,
+      )
+      .length;
 
   double get progress => total == 0 ? 0 : (transferred / total).clamp(0.0, 1.0);
 

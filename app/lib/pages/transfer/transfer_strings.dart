@@ -28,6 +28,7 @@ abstract final class TransferStrings {
   static const percentage = 'Progress';
   static const total = 'Total';
   static const device = 'Device';
+  static const devices = 'Devices';
   static const noActiveFile = 'No active file';
   static const selectFiles = 'Select files';
   static const selected = 'selected';
