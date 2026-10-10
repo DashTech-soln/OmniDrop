@@ -43,6 +43,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.Executors
+import kotlin.system.exitProcess
 
 
 private const val CHANNEL = "com.omnidrop.app/localsend"
@@ -62,6 +63,39 @@ private const val PERMISSION_ACCESS_LOCAL_NETWORK = "android.permission.ACCESS_L
 private const val PERMISSION_NEARBY_WIFI_DEVICES = "android.permission.NEARBY_WIFI_DEVICES"
 private const val PERMISSION_POST_NOTIFICATIONS = "android.permission.POST_NOTIFICATIONS"
 private const val API_LEVEL_ANDROID_17 = 37
+private const val NATIVE_CRASH_FILE = "last_native_crash.txt"
+
+private object PairingNativeCrashReport {
+    @Volatile
+    private var installed = false
+
+    @Synchronized
+    fun install(context: Context) {
+        if (installed) return
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            try {
+                File(context.filesDir, NATIVE_CRASH_FILE).writeText(
+                    "Time: ${System.currentTimeMillis()}\nThread: ${thread.name}\n${error.stackTraceToString()}",
+                )
+            } catch (writeError: Exception) {
+                android.util.Log.e("OmniDrop", "Could not write native crash report", writeError)
+            }
+            if (previous != null) {
+                previous.uncaughtException(thread, error)
+            } else {
+                android.os.Process.killProcess(android.os.Process.myPid())
+                exitProcess(10)
+            }
+        }
+        installed = true
+    }
+
+    fun read(context: Context): String? {
+        val file = File(context.filesDir, NATIVE_CRASH_FILE)
+        return if (file.exists()) file.readText() else null
+    }
+}
 
 class MainActivity : FlutterActivity() {
     private val mediaQueryExecutor = Executors.newFixedThreadPool(2)
@@ -107,6 +141,11 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        PairingNativeLog.append(
+            applicationContext,
+            "activity_destroyed",
+            "isFinishing=$isFinishing; isChangingConfigurations=$isChangingConfigurations",
+        )
         if (hotspotReceiverRegistered) {
             unregisterReceiver(hotspotResultReceiver)
             hotspotReceiverRegistered = false
@@ -118,6 +157,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        PairingNativeCrashReport.install(applicationContext)
         PairingNativeLog.recoverProcessTermination(this)
     }
 
@@ -301,6 +341,8 @@ class MainActivity : FlutterActivity() {
                 "canRequest5GHz" -> result.success(false)
 
                 "getNativePairingLog" -> result.success(PairingNativeLog.read(this))
+
+                "getLastNativeCrash" -> result.success(PairingNativeCrashReport.read(this))
 
                 "startPairingKeepAlive" ->
                     startPairingServiceCommand(PairingForegroundService.ACTION_KEEP_ALIVE, result)

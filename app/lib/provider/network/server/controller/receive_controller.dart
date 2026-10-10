@@ -62,8 +62,18 @@ class ReceiveController {
 
     // Feed the device into the discovery store; it comes back (and is
     // registered) via the [StartDiscoveryListener] stream.
-    server.ref.redux(parentIsolateProvider).dispatch(IsolateDiscoveryAddDeviceAction(device: event.info.toDevice(event.ip, withChannel: true)));
-    server.ref.notifier(discoveryLoggerProvider).addLog('[DISCOVER/TCP] Received "/register" HTTP request: ${event.info.alias} (${event.ip})');
+    server.ref
+        .redux(parentIsolateProvider)
+        .dispatch(
+          IsolateDiscoveryAddDeviceAction(
+            device: event.info.toDevice(event.ip, withChannel: true),
+          ),
+        );
+    server.ref
+        .notifier(discoveryLoggerProvider)
+        .addLog(
+          '[DISCOVER/TCP] Received "/register" HTTP request: ${event.info.alias} (${event.ip})',
+        );
   }
 
   /// A sender requests to upload files.
@@ -132,7 +142,9 @@ class ReceiveController {
         .notifier(fileTransferProvider)
         .setStatuses(
           sessionId: sessionId,
-          statuses: {for (final file in files.values) file.id: FileStatus.queue},
+          statuses: {
+            for (final file in files.values) file.id: FileStatus.queue,
+          },
         );
 
     bool quickSave = settings.quickSave && server.getState().session?.message == null;
@@ -151,14 +163,10 @@ class ReceiveController {
     if (quickSave) {
       // Push before accepting: the permission request in [acceptFileRequest] may block for a while.
       // ignore: use_build_context_synchronously, unawaited_futures
-      Routerino.context.pushImmediately(
-        () => const TransferProgressPage(),
-      );
+      Routerino.context.pushImmediately(() => const TransferProgressPage());
 
       // accept all files
-      await acceptFileRequest({
-        for (final f in files.values) f.id: f.fileName,
-      });
+      await acceptFileRequest({for (final f in files.values) f.id: f.fileName});
       return;
     }
 
@@ -213,7 +221,7 @@ class ReceiveController {
           // Push before accepting: the permission request in [acceptFileRequest] may block for a while.
           unawaited(
             Routerino.context.pushAndRemoveUntilImmediately(
-              removeUntil: ReceivePage,
+              removeUntil: HomePage,
               builder: () => const TransferProgressPage(),
             ),
           );
@@ -241,11 +249,20 @@ class ReceiveController {
   /// only the session state is updated here.
   void onFileUpload(HttpServerFileUploadEvent event) {
     final receiveState = server.getStateOrNull()?.session;
-    const allowedStates = {SessionStatus.sending, SessionStatus.finishedWithErrors};
+    const allowedStates = {
+      SessionStatus.sending,
+      SessionStatus.finishedWithErrors,
+    };
     if (receiveState == null || receiveState.sessionId != event.sessionId || !allowedStates.contains(receiveState.status)) {
-      _logger.warning('Failing upload of file ${event.fileId}: no matching active session');
+      _logger.warning(
+        'Failing upload of file ${event.fileId}: no matching active session',
+      );
       // Fail the upload (and any further ones) by cancelling the session on the Rust side.
-      server.ref.redux(parentIsolateProvider).dispatch(IsolateHttpServerCancelSessionAction(sessionId: event.sessionId));
+      server.ref
+          .redux(parentIsolateProvider)
+          .dispatch(
+            IsolateHttpServerCancelSessionAction(sessionId: event.sessionId),
+          );
       return;
     }
 
@@ -253,12 +270,22 @@ class ReceiveController {
     final receivingFile = receiveState.files[fileId];
     if (receivingFile == null || receivingFile.desiredName == null) {
       _logger.warning('Unexpected fileId: $fileId');
-      server.ref.redux(parentIsolateProvider).dispatch(IsolateHttpServerCancelSessionAction(sessionId: event.sessionId));
+      server.ref
+          .redux(parentIsolateProvider)
+          .dispatch(
+            IsolateHttpServerCancelSessionAction(sessionId: event.sessionId),
+          );
       return;
     }
 
     // begin of actual file transfer
-    server.ref.notifier(fileTransferProvider).setStatus(sessionId: event.sessionId, fileId: fileId, status: FileStatus.sending);
+    server.ref
+        .notifier(fileTransferProvider)
+        .setStatus(
+          sessionId: event.sessionId,
+          fileId: fileId,
+          status: FileStatus.sending,
+        );
     if (receiveState.startTime == null || receiveState.status != SessionStatus.sending) {
       server.setState(
         (oldState) => oldState?.copyWith(
@@ -307,7 +334,13 @@ class ReceiveController {
       }
       final size = receivingFile.file.size;
       totalBytes += size;
-      currentBytes += (transferNotifier.getProgress(sessionId: session.sessionId, fileId: receivingFile.file.id) * size).round();
+      currentBytes +=
+          (transferNotifier.getProgress(
+                    sessionId: session.sessionId,
+                    fileId: receivingFile.file.id,
+                  ) *
+                  size)
+              .round();
     }
 
     TransferNotification.update(
@@ -322,7 +355,10 @@ class ReceiveController {
   /// A file has been received completely (or failed) by the server isolate.
   Future<void> onFileUploadResult(HttpServerFileUploadResultEvent event) async {
     final receiveState = server.getStateOrNull()?.session;
-    const allowedStates = {SessionStatus.sending, SessionStatus.finishedWithErrors};
+    const allowedStates = {
+      SessionStatus.sending,
+      SessionStatus.finishedWithErrors,
+    };
     if (receiveState == null || receiveState.sessionId != event.sessionId || !allowedStates.contains(receiveState.status)) {
       return;
     }
@@ -339,7 +375,13 @@ class ReceiveController {
     final error = event.error;
 
     if (error == null) {
-      server.ref.notifier(fileTransferProvider).setStatus(sessionId: event.sessionId, fileId: fileId, status: FileStatus.finished);
+      server.ref
+          .notifier(fileTransferProvider)
+          .setStatus(
+            sessionId: event.sessionId,
+            fileId: fileId,
+            status: FileStatus.finished,
+          );
       server.setState(
         (oldState) => oldState?.copyWith(
           session: oldState.session?.fileFinished(
@@ -368,7 +410,13 @@ class ReceiveController {
             ),
           );
     } else {
-      server.ref.notifier(fileTransferProvider).setStatus(sessionId: event.sessionId, fileId: fileId, status: FileStatus.failed);
+      server.ref
+          .notifier(fileTransferProvider)
+          .setStatus(
+            sessionId: event.sessionId,
+            fileId: fileId,
+            status: FileStatus.failed,
+          );
       server.setState(
         (oldState) => oldState?.copyWith(
           session: oldState.session?.fileFinished(
@@ -442,7 +490,9 @@ class ReceiveController {
           _logger.info('Closing session');
 
           // ignore: use_build_context_synchronously, discarded_futures
-          Routerino.context.pushRootImmediately(() => const HomePage(initialTab: HomeTab.send, appStart: false));
+          Routerino.context.pushRootImmediately(
+            () => const HomePage(initialTab: HomeTab.send, appStart: false),
+          );
 
           // open the dialog to open file instantly
           if (filePath != null && filePath.isNotEmpty) {
@@ -490,7 +540,9 @@ class ReceiveController {
   /// *sending* to it.
   void onCancelReceived(HttpServerCancelReceivedEvent event) {
     final sendSessions = server.ref.read(sendProvider);
-    final selectedSession = sendSessions.values.firstWhereOrNull((s) => s.remoteSessionId == event.sessionId);
+    final selectedSession = sendSessions.values.firstWhereOrNull(
+      (s) => s.remoteSessionId == event.sessionId,
+    );
     if (selectedSession == null) {
       return;
     }
@@ -503,11 +555,7 @@ class ReceiveController {
       return;
     }
 
-    server.ref
-        .notifier(sendProvider)
-        .cancelSessionByReceiver(
-          selectedSession.sessionId,
-        );
+    server.ref.notifier(sendProvider).cancelSessionByReceiver(selectedSession.sessionId);
   }
 
   /// Another application instance requested the running application to show itself.
@@ -546,37 +594,41 @@ class ReceiveController {
     if (fileNameMap.isEmpty) {
       // nothing selected, the Rust server responds with 204 and creates no session
       // This usually happens for message transfers
-      server.ref.redux(parentIsolateProvider).dispatch(IsolateHttpServerPrepareUploadDecisionAction(config: _buildReceiveConfig(session, {})));
+      server.ref
+          .redux(parentIsolateProvider)
+          .dispatch(
+            IsolateHttpServerPrepareUploadDecisionAction(
+              config: _buildReceiveConfig(session, {}),
+            ),
+          );
       closeSession();
       return;
     }
 
-    server.setState(
-      (oldState) {
-        final receiveState = oldState!.session!;
-        return oldState.copyWith(
-          session: receiveState.copyWith(
-            status: SessionStatus.sending,
-            files: Map.fromEntries(
-              receiveState.files.values.map((entry) {
-                final desiredName = fileNameMap[entry.file.id];
-                return MapEntry(
-                  entry.file.id,
-                  ReceivingFile(
-                    file: entry.file,
-                    token: null,
-                    desiredName: desiredName,
-                    path: null,
-                    savedToGallery: false,
-                    errorMessage: null,
-                  ),
-                );
-              }),
-            ),
+    server.setState((oldState) {
+      final receiveState = oldState!.session!;
+      return oldState.copyWith(
+        session: receiveState.copyWith(
+          status: SessionStatus.sending,
+          files: Map.fromEntries(
+            receiveState.files.values.map((entry) {
+              final desiredName = fileNameMap[entry.file.id];
+              return MapEntry(
+                entry.file.id,
+                ReceivingFile(
+                  file: entry.file,
+                  token: null,
+                  desiredName: desiredName,
+                  path: null,
+                  savedToGallery: false,
+                  errorMessage: null,
+                ),
+              );
+            }),
           ),
-        );
-      },
-    );
+        ),
+      );
+    });
 
     server.ref
         .notifier(fileTransferProvider)
@@ -615,10 +667,17 @@ class ReceiveController {
     }
     server.ref
         .redux(parentIsolateProvider)
-        .dispatch(IsolateHttpServerPrepareUploadDecisionAction(config: _buildReceiveConfig(updatedSession, fileNameMap)));
+        .dispatch(
+          IsolateHttpServerPrepareUploadDecisionAction(
+            config: _buildReceiveConfig(updatedSession, fileNameMap),
+          ),
+        );
   }
 
-  HttpServerReceiveConfig _buildReceiveConfig(ReceiveSessionState session, Map<String, String> fileNameMap) {
+  HttpServerReceiveConfig _buildReceiveConfig(
+    ReceiveSessionState session,
+    Map<String, String> fileNameMap,
+  ) {
     return HttpServerReceiveConfig(
       sessionId: session.sessionId,
       fileNameMap: fileNameMap,
@@ -654,9 +713,7 @@ class ReceiveController {
   void setSessionSaveToGallery(bool saveToGallery) {
     server.setState(
       (oldState) => oldState?.copyWith(
-        session: oldState.session?.copyWith(
-          saveToGallery: saveToGallery,
-        ),
+        session: oldState.session?.copyWith(saveToGallery: saveToGallery),
       ),
     );
   }
@@ -672,7 +729,11 @@ class ReceiveController {
     }
 
     // fail further uploads
-    server.ref.redux(parentIsolateProvider).dispatch(IsolateHttpServerCancelSessionAction(sessionId: session.sessionId));
+    server.ref
+        .redux(parentIsolateProvider)
+        .dispatch(
+          IsolateHttpServerCancelSessionAction(sessionId: session.sessionId),
+        );
 
     // notify sender
     final target = session.sender;
@@ -702,11 +763,7 @@ class ReceiveController {
 
     TransferNotification.stop(sessionId);
 
-    server.setState(
-      (oldState) => oldState?.copyWith(
-        session: null,
-      ),
-    );
+    server.setState((oldState) => oldState?.copyWith(session: null));
     server.ref.notifier(fileTransferProvider).removeSession(sessionId);
   }
 }

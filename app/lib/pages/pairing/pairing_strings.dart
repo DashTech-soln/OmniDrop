@@ -27,6 +27,9 @@ abstract final class PairingStrings {
   static const cameraUnavailable = 'Camera QR scanning is unavailable on this platform.';
   static const connectToHotspot = 'Connect to this Wi-Fi network, then continue.';
   static const hotspotConnectionFailed = 'Could not connect automatically. Connect to the network manually.';
+  static const hotspotIncompatibleMode =
+      'Turn off your phone’s existing hotspot first, or use the Wi-Fi Direct tab while both phones are on the same network.';
+  static const encryptionChangeUnavailable = 'Encryption cannot be changed while a pairing or transfer session is active.';
   static const sessionExpired = 'The sender session is no longer active.';
   static const startQr = 'Start QR pairing';
   static const startNearby = 'Start nearby pairing';
@@ -86,4 +89,6 @@ abstract final class PairingStrings {
   static const guideStepTwoLabel = '2';
   static const guideStepThreeLabel = '3';
   static const enablingWifi = 'Enabling Wi-Fi';
+  static const starting = 'Starting OmniDrop…';
+  static const pairedDeviceDisconnected = 'The paired device disconnected.';
 }

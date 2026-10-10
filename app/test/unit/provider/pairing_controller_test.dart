@@ -30,7 +30,10 @@ void main() {
   test('single-recipient paired control event closes selection', () async {
     final service = Notifier.test(
       notifier: PairingController(),
-      initialState: const PairingState(phase: PairingPhase.peerJoined, role: PairingRole.sender),
+      initialState: const PairingState(
+        phase: PairingPhase.peerJoined,
+        role: PairingRole.sender,
+      ),
     );
 
     await service.notifier.handleControlEvent('paired');
@@ -56,10 +59,21 @@ void main() {
     expect(service.state.sessionToken, 'active-session');
   });
 
+  test(
+    'multi-recipient flag keeps the sender pairing card open after a join',
+    () {
+      expect(shouldAutoClosePairingSenderCard(multiRecipient: true), isFalse);
+      expect(shouldAutoClosePairingSenderCard(multiRecipient: false), isTrue);
+    },
+  );
+
   test('invalid PIN is rejected before attempting a join', () async {
     final service = Notifier.test(
       notifier: PairingController(),
-      initialState: const PairingState(phase: PairingPhase.waitingForPin, role: PairingRole.receiver),
+      initialState: const PairingState(
+        phase: PairingPhase.waitingForPin,
+        role: PairingRole.receiver,
+      ),
     );
 
     await service.notifier.submitPin('12345');
@@ -93,27 +107,33 @@ void main() {
     expect(service.state.phase, PairingPhase.manualGuide);
   });
 
-  test('control events do not tear down the session; explicit stop does', () async {
-    final service = Notifier.test(
-      notifier: PairingController(),
-      initialState: const PairingState(
-        phase: PairingPhase.peerJoined,
-        role: PairingRole.sender,
-        sessionToken: 'active-session',
-      ),
-    );
+  test(
+    'control events do not tear down the session; explicit stop does',
+    () async {
+      final service = Notifier.test(
+        notifier: PairingController(),
+        initialState: const PairingState(
+          phase: PairingPhase.peerJoined,
+          role: PairingRole.sender,
+          sessionToken: 'active-session',
+        ),
+      );
 
-    await service.notifier.handleControlEvent('finalized');
-    expect(service.state.phase, PairingPhase.closedForSelection);
-    expect(service.state.sessionToken, 'active-session');
+      await service.notifier.handleControlEvent('finalized');
+      expect(service.state.phase, PairingPhase.closedForSelection);
+      expect(service.state.sessionToken, 'active-session');
 
-    final explicitStop = Notifier.test(
-      notifier: PairingController(),
-      initialState: const PairingState(phase: PairingPhase.peerJoined, role: PairingRole.sender),
-    );
-    await explicitStop.notifier.stop();
-    expect(explicitStop.state.phase, PairingPhase.idle);
-  });
+      final explicitStop = Notifier.test(
+        notifier: PairingController(),
+        initialState: const PairingState(
+          phase: PairingPhase.peerJoined,
+          role: PairingRole.sender,
+        ),
+      );
+      await explicitStop.notifier.stop();
+      expect(explicitStop.state.phase, PairingPhase.idle);
+    },
+  );
 
   test('edited PIN reaches the Rust pairing session options', () {
     const options = PairingOptions(
@@ -124,7 +144,10 @@ void main() {
       encrypted: true,
     );
 
-    final task = options.toSessionTask(sender: _device('SENDER', 'Sender'), avatarIndex: 2);
+    final task = options.toSessionTask(
+      sender: _device('SENDER', 'Sender'),
+      avatarIndex: 2,
+    );
 
     expect(task.pin, '827164');
   });
@@ -154,7 +177,10 @@ void main() {
   test('stopping receiver pairing returns the controller to idle', () async {
     final service = Notifier.test(
       notifier: PairingController(),
-      initialState: const PairingState(phase: PairingPhase.scanning, role: PairingRole.receiver),
+      initialState: const PairingState(
+        phase: PairingPhase.scanning,
+        role: PairingRole.receiver,
+      ),
     );
 
     await service.notifier.stop();
@@ -166,7 +192,11 @@ void main() {
   test('pairing connection reset clears peers and recipient selection', () {
     final service = Notifier.test(notifier: PairingConnectionController());
     final peer = _device('RECEIVER', 'Receiver');
-    service.notifier.connect(role: PairingRole.sender, sessionToken: 'connection', peers: [peer]);
+    service.notifier.connect(
+      role: PairingRole.sender,
+      sessionToken: 'connection',
+      peers: [peer],
+    );
     service.notifier.rememberSelection({'RECEIVER'});
 
     service.notifier.clear();
@@ -185,9 +215,12 @@ void main() {
     expect(PairingRecipientSelection.togglePeer({'A', 'C'}, 'B', true), ids);
   });
 
-  test('a single connected peer is selected directly without a picker selection', () {
-    final peer = _device('RECEIVER', 'Receiver');
+  test(
+    'a single connected peer is selected directly without a picker selection',
+    () {
+      final peer = _device('RECEIVER', 'Receiver');
 
-    expect(pairingTargetsForSelection([peer], {}), [peer]);
-  });
+      expect(pairingTargetsForSelection([peer], {}), [peer]);
+    },
+  );
 }

@@ -27,13 +27,14 @@ Future<void> showPairingSendCard(
   return showDialog<void>(
     context: context,
     barrierDismissible: false,
-    builder: (_) => _PairingSheet(
-      child: _SendPairingCard(onSendOverLan: onSendOverLan),
-    ),
+    builder: (_) => _PairingSheet(child: _SendPairingCard(onSendOverLan: onSendOverLan)),
   );
 }
 
-Future<void> showPairingReceiveCard(BuildContext context, {bool allowWebDropLinks = false}) {
+Future<void> showPairingReceiveCard(
+  BuildContext context, {
+  bool allowWebDropLinks = false,
+}) {
   return showDialog<void>(
     context: context,
     barrierDismissible: false,
@@ -42,6 +43,8 @@ Future<void> showPairingReceiveCard(BuildContext context, {bool allowWebDropLink
     ),
   );
 }
+
+bool shouldAutoClosePairingSenderCard({required bool multiRecipient}) => !multiRecipient;
 
 class _PairingSheet extends StatelessWidget {
   final Widget child;
@@ -52,7 +55,10 @@ class _PairingSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     final media = MediaQuery.of(context);
     final width = math.min(media.size.width * 0.92, 560.0);
-    final height = math.min(media.size.height * 2 / 3, media.size.height - media.viewInsets.vertical - 24);
+    final height = math.min(
+      media.size.height * 2 / 3,
+      media.size.height - media.viewInsets.vertical - 24,
+    );
     return Dialog(
       insetPadding: EdgeInsets.zero,
       backgroundColor: Colors.transparent,
@@ -73,14 +79,78 @@ class _PairingSheet extends StatelessWidget {
   }
 }
 
+class _PairingPinDialog extends StatefulWidget {
+  final String initialPin;
+
+  const _PairingPinDialog({required this.initialPin});
+
+  @override
+  State<_PairingPinDialog> createState() => _PairingPinDialogState();
+}
+
+class _PairingPinDialogState extends State<_PairingPinDialog> {
+  late final TextEditingController _pinController = TextEditingController(
+    text: widget.initialPin,
+  );
+  String _errorText = '';
+
+  @override
+  void dispose() {
+    _pinController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text(PairingStrings.enterPin),
+      content: TextField(
+        controller: _pinController,
+        autofocus: true,
+        keyboardType: TextInputType.number,
+        maxLength: 6,
+        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        decoration: InputDecoration(
+          labelText: PairingStrings.pinHint,
+          errorText: _errorText.isEmpty ? null : _errorText,
+          counterText: '',
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text(PairingStrings.cancel),
+        ),
+        FilledButton(
+          onPressed: () {
+            if (!PairingController.isValidPin(_pinController.text)) {
+              setState(() => _errorText = PairingStrings.invalidPin);
+              return;
+            }
+            Navigator.of(context).pop(_pinController.text);
+          },
+          child: const Text(PairingStrings.save),
+        ),
+      ],
+    );
+  }
+}
+
 class PairingRecipientSelection {
-  static Set<String> toggleAll(Set<String> selected, Iterable<String> fingerprints) {
+  static Set<String> toggleAll(
+    Set<String> selected,
+    Iterable<String> fingerprints,
+  ) {
     final all = fingerprints.toSet();
     if (all.isNotEmpty && selected.containsAll(all)) return {};
     return all;
   }
 
-  static Set<String> togglePeer(Set<String> selected, String fingerprint, bool checked) {
+  static Set<String> togglePeer(
+    Set<String> selected,
+    String fingerprint,
+    bool checked,
+  ) {
     final next = {...selected};
     if (checked) {
       next.add(fingerprint);
@@ -119,7 +189,11 @@ class PairingTargetSelectionList extends StatelessWidget {
         for (final peer in peers)
           CheckboxListTile(
             secondary: const CircleAvatar(child: Icon(Icons.devices)),
-            title: Text(peer.alias, maxLines: 1, overflow: TextOverflow.ellipsis),
+            title: Text(
+              peer.alias,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
             subtitle: const Text('Connected'),
             value: selectedFingerprints.contains(peer.fingerprint),
             onChanged: (checked) => onTogglePeer(peer.fingerprint, checked == true),
@@ -129,7 +203,10 @@ class PairingTargetSelectionList extends StatelessWidget {
   }
 }
 
-List<PairingDeviceInfo> pairingTargetsForSelection(List<PairingDeviceInfo> peers, Set<String> selectedFingerprints) {
+List<PairingDeviceInfo> pairingTargetsForSelection(
+  List<PairingDeviceInfo> peers,
+  Set<String> selectedFingerprints,
+) {
   if (peers.length == 1) return peers;
   return peers.where((peer) => selectedFingerprints.contains(peer.fingerprint)).toList();
 }
@@ -191,7 +268,12 @@ class _PairingTargetPickerState extends State<_PairingTargetPicker> with Refena 
           padding: const EdgeInsets.fromLTRB(20, 14, 12, 8),
           child: Row(
             children: [
-              Expanded(child: Text('Send to devices', style: Theme.of(context).textTheme.titleLarge)),
+              Expanded(
+                child: Text(
+                  'Send to devices',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+              ),
               IconButton(
                 tooltip: PairingStrings.close,
                 onPressed: () => Navigator.of(context).pop(),
@@ -206,9 +288,18 @@ class _PairingTargetPickerState extends State<_PairingTargetPicker> with Refena 
               PairingTargetSelectionList(
                 peers: peers,
                 selectedFingerprints: selected,
-                onToggleAll: (_) => setState(() => _selected = PairingRecipientSelection.toggleAll(selected, fingerprints)),
+                onToggleAll: (_) => setState(
+                  () => _selected = PairingRecipientSelection.toggleAll(
+                    selected,
+                    fingerprints,
+                  ),
+                ),
                 onTogglePeer: (fingerprint, checked) => setState(() {
-                  _selected = PairingRecipientSelection.togglePeer(selected, fingerprint, checked);
+                  _selected = PairingRecipientSelection.togglePeer(
+                    selected,
+                    fingerprint,
+                    checked,
+                  );
                 }),
               ),
             ],
@@ -247,6 +338,7 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
   bool _pinEnabled = false;
   bool _busy = false;
   bool _autoClosed = false;
+  bool _dismissed = false;
   String _pin = '';
   int _secondsLeft = PairingController.sessionLifetime.inSeconds;
   Timer? _stateTimer;
@@ -284,19 +376,39 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
       final remaining = expiry.difference(DateTime.now()).inSeconds.clamp(0, PairingController.sessionLifetime.inSeconds);
       if (remaining != _secondsLeft) setState(() => _secondsLeft = remaining);
     }
-    if (!_autoClosed && ref.read(pairingConnectionProvider).isConnected) {
+    if (!_autoClosed &&
+        !_busy &&
+        shouldAutoClosePairingSenderCard(multiRecipient: _multiRecipient) &&
+        ref.read(pairingConnectionProvider).isConnected) {
       _autoClosed = true;
-      Navigator.of(context).pop();
+      _dismissCard();
     }
   }
 
-  Future<void> _ensureSession(PairingMode mode, {bool restart = false}) async {
-    if (_busy || !mounted) return;
+  void _dismissCard() {
+    if (_dismissed || !mounted) return;
+    _dismissed = true;
+    final navigator = Navigator.of(context);
+    ref
+        .notifier(pairingControllerProvider)
+        .logUiEvent(
+          'send_card_dismiss',
+          'Popping ${ModalRoute.of(context)?.runtimeType}; canPop=${navigator.canPop()}',
+        );
+    navigator.pop();
+  }
+
+  Future<void> _ensureSession(
+    PairingMode mode, {
+    bool restart = false,
+    bool busyAlreadySet = false,
+  }) async {
+    if ((_busy && !busyAlreadySet) || !mounted) return;
     final controller = ref.notifier(pairingControllerProvider);
     final current = ref.read(pairingControllerProvider);
     if (!restart && current.sessionToken != null && current.mode == mode) return;
 
-    setState(() => _busy = true);
+    if (!busyAlreadySet) setState(() => _busy = true);
     try {
       if (current.sessionToken != null) await controller.stop();
       await controller.startSender(
@@ -320,7 +432,9 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
       if (!mounted) return;
       setState(() {});
       if (ref.read(pairingControllerProvider).failureReason == null) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.toString())));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.toString())));
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -336,79 +450,90 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
   Future<void> _changeOption({bool? multiRecipient, bool? encrypted}) async {
     if (_busy) return;
     setState(() {
+      _busy = true;
       if (multiRecipient != null) _multiRecipient = multiRecipient;
       if (encrypted != null) _encrypted = encrypted;
     });
-    final persistence = ref.read(persistenceProvider);
-    if (multiRecipient != null) await persistence.setPairingMultiRecipient(multiRecipient);
-    if (encrypted != null) await persistence.setPairingEncrypted(encrypted);
-    await _ensureSession(_mode, restart: true);
+    try {
+      final persistence = ref.read(persistenceProvider);
+      if (multiRecipient != null) await persistence.setPairingMultiRecipient(multiRecipient);
+      if (encrypted != null) await persistence.setPairingEncrypted(encrypted);
+      if (!mounted) return;
+      await _ensureSession(_mode, restart: true, busyAlreadySet: true);
+    } catch (error) {
+      if (mounted) {
+        setState(() => _busy = false);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.toString())));
+      }
+    }
   }
 
   Future<void> _setPinProtection(bool enabled) async {
     if (_busy) return;
     if (!enabled) {
-      setState(() => _pinEnabled = false);
-      await ref.read(persistenceProvider).setPairingPinProtectionEnabled(false);
-      await _ensureSession(_mode, restart: true);
+      setState(() {
+        _pinEnabled = false;
+        _busy = true;
+      });
+      try {
+        await ref.read(persistenceProvider).setPairingPinProtectionEnabled(false);
+        if (mounted) await _ensureSession(_mode, restart: true, busyAlreadySet: true);
+      } catch (error) {
+        if (mounted) {
+          setState(() => _busy = false);
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(error.toString())));
+        }
+      }
       return;
     }
 
-    final pinController = TextEditingController(text: _pin.isEmpty ? ref.notifier(pairingControllerProvider).suggestPin() : _pin);
-    var errorText = '';
     final pin = await showDialog<String>(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text(PairingStrings.enterPin),
-          content: TextField(
-            controller: pinController,
-            autofocus: true,
-            keyboardType: TextInputType.number,
-            maxLength: 6,
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-            decoration: InputDecoration(
-              labelText: PairingStrings.pinHint,
-              errorText: errorText.isEmpty ? null : errorText,
-              counterText: '',
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text(PairingStrings.cancel)),
-            FilledButton(
-              onPressed: () {
-                if (!PairingController.isValidPin(pinController.text)) {
-                  setDialogState(() => errorText = PairingStrings.invalidPin);
-                  return;
-                }
-                Navigator.pop(dialogContext, pinController.text);
-              },
-              child: const Text(PairingStrings.save),
-            ),
-          ],
-        ),
+      builder: (_) => _PairingPinDialog(
+        initialPin: _pin.isEmpty ? ref.notifier(pairingControllerProvider).suggestPin() : _pin,
       ),
     );
-    pinController.dispose();
     if (pin == null || !mounted) return;
     setState(() {
       _pin = pin;
       _pinEnabled = true;
+      _busy = true;
     });
-    await ref.read(persistenceProvider).setPairingPinProtectionEnabled(true);
-    await _ensureSession(PairingMode.sameNetwork, restart: true);
+    try {
+      await ref.read(persistenceProvider).setPairingPinProtectionEnabled(true);
+      if (mounted)
+        await _ensureSession(
+          PairingMode.sameNetwork,
+          restart: true,
+          busyAlreadySet: true,
+        );
+    } catch (error) {
+      if (mounted) {
+        setState(() => _busy = false);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.toString())));
+      }
+    }
   }
 
   Future<void> _closeCard() async {
     final state = ref.read(pairingControllerProvider);
     final connected = ref.read(pairingConnectionProvider).isConnected;
-    if (!connected && state.sessionToken != null && !state.multiRecipient) await ref.notifier(pairingControllerProvider).stop();
-    if (mounted) Navigator.of(context).pop();
+    final shouldStop = !connected && state.sessionToken != null && !state.multiRecipient;
+    _dismissCard();
+    if (shouldStop) {
+      await ref.notifier(pairingControllerProvider).stop();
+    }
   }
 
   Future<void> _stop() async {
+    _dismissCard();
     await ref.notifier(pairingControllerProvider).stop();
-    if (mounted) Navigator.of(context).pop();
   }
 
   void _showGuide() => unawaited(showPairingConnectionGuide(context));
@@ -445,8 +570,16 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: SegmentedButton<PairingMode>(
             segments: const [
-              ButtonSegment(value: PairingMode.qr, label: Text(PairingStrings.qr), icon: Icon(Icons.qr_code_2)),
-              ButtonSegment(value: PairingMode.sameNetwork, label: Text(PairingStrings.wifiDirect), icon: Icon(Icons.wifi)),
+              ButtonSegment(
+                value: PairingMode.qr,
+                label: Text(PairingStrings.qr),
+                icon: Icon(Icons.qr_code_2),
+              ),
+              ButtonSegment(
+                value: PairingMode.sameNetwork,
+                label: Text(PairingStrings.wifiDirect),
+                icon: Icon(Icons.wifi),
+              ),
             ],
             selected: {_mode},
             onSelectionChanged: _busy ? null : (modes) => _selectMode(modes.first),
@@ -455,7 +588,11 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
         if (state.sessionToken != null && !ref.watch(pairingConnectionProvider).isConnected)
           Align(
             alignment: Alignment.centerRight,
-            child: TextButton.icon(onPressed: _stop, icon: const Icon(Icons.stop_circle_outlined), label: const Text(PairingStrings.stop)),
+            child: TextButton.icon(
+              onPressed: _stop,
+              icon: const Icon(Icons.stop_circle_outlined),
+              label: const Text(PairingStrings.stop),
+            ),
           ),
         Expanded(
           child: SingleChildScrollView(
@@ -466,14 +603,21 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
                   if (state.qrPayload != null)
                     Center(
                       child: ConstrainedBox(
-                        constraints: BoxConstraints.tightFor(width: qrSize, height: qrSize),
+                        constraints: BoxConstraints.tightFor(
+                          width: qrSize,
+                          height: qrSize,
+                        ),
                         child: GlassCard(
                           margin: EdgeInsets.zero,
                           padding: const EdgeInsets.all(10),
                           radius: glassRadiusCard,
                           child: PrettyQrView.data(
                             data: state.qrPayload!,
-                            decoration: PrettyQrDecoration(shape: PrettyQrSmoothSymbol(color: colors.onSurface)),
+                            decoration: PrettyQrDecoration(
+                              shape: PrettyQrSmoothSymbol(
+                                color: colors.onSurface,
+                              ),
+                            ),
                           ),
                         ),
                       ),
@@ -490,14 +634,41 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
                               ),
                       ),
                     ),
+                  if (state.failureReason?.contains(
+                        'HOTSPOT_INCOMPATIBLE_MODE',
+                      ) ==
+                      true) ...[
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                      child: Text(
+                        PairingStrings.hotspotIncompatibleMode,
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _busy ? null : () => _selectMode(PairingMode.sameNetwork),
+                      icon: const Icon(Icons.wifi),
+                      label: const Text(PairingStrings.wifiDirect),
+                    ),
+                  ],
                   if (state.qrPayload != null) ...[
                     const SizedBox(height: 8),
-                    const Text(PairingStrings.qrOnlyNotice, textAlign: TextAlign.center),
+                    const Text(
+                      PairingStrings.qrOnlyNotice,
+                      textAlign: TextAlign.center,
+                    ),
                     const SizedBox(height: 4),
                     _Countdown(seconds: _secondsLeft),
                   ],
                   if (state.expiresAt != null)
-                    Text(PairingStrings.optionRestartHint, style: Theme.of(context).textTheme.bodySmall, textAlign: TextAlign.center),
+                    Text(
+                      PairingStrings.optionRestartHint,
+                      style: Theme.of(context).textTheme.bodySmall,
+                      textAlign: TextAlign.center,
+                    ),
                   if (state.canUse5GMode)
                     CheckboxListTile(
                       dense: true,
@@ -509,7 +680,10 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
                   _multiRecipientOption(),
                   _encryptionOption(),
                   if (state.phase == PairingPhase.closedForSelection)
-                    Text(PairingStrings.selectDevices, style: Theme.of(context).textTheme.titleSmall),
+                    Text(
+                      PairingStrings.selectDevices,
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
                   _JoinedDevices(peers: state.peers),
                 ] else ...[
                   _ProfileHeader(alias: device.alias, avatarIndex: avatarIndex),
@@ -541,7 +715,11 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
                       subtitle: SelectableText(_pin),
                     ),
                   _JoinedDevices(peers: state.peers),
-                  TextButton.icon(onPressed: _showGuide, icon: const Icon(Icons.info_outline), label: const Text(PairingStrings.howToConnect)),
+                  TextButton.icon(
+                    onPressed: _showGuide,
+                    icon: const Icon(Icons.info_outline),
+                    label: const Text(PairingStrings.howToConnect),
+                  ),
                   FilledButton.tonalIcon(
                     onPressed: () async {
                       Navigator.of(context).pop();
@@ -576,6 +754,8 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
   int _scannerKey = 0;
   bool _handledCode = false;
   bool _autoClosed = false;
+  bool _dismissed = false;
+  bool _encryptionBusy = false;
   bool _initialized = false;
 
   @override
@@ -607,9 +787,20 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
   }
 
   Future<void> _setEncryption(bool enabled) async {
-    if (enabled == _encrypted) return;
+    if (enabled == _encrypted || _encryptionBusy) return;
+    if (ref.read(pairingConnectionProvider).isConnected || ref.read(serverProvider)?.session != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(PairingStrings.encryptionChangeUnavailable),
+        ),
+      );
+      return;
+    }
     final previous = _encrypted;
-    setState(() => _encrypted = enabled);
+    setState(() {
+      _encrypted = enabled;
+      _encryptionBusy = true;
+    });
     try {
       await ref.notifier(settingsProvider).setHttps(enabled);
       if (ref.read(serverProvider) != null) {
@@ -619,7 +810,11 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
     } catch (error) {
       if (!mounted) return;
       setState(() => _encrypted = previous);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.toString())));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.toString())));
+    } finally {
+      if (mounted) setState(() => _encryptionBusy = false);
     }
   }
 
@@ -646,10 +841,20 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
         context: context,
         builder: (context) => AlertDialog(
           title: const Text(PairingStrings.openLinkQuestion),
-          content: Text(uri.toString(), maxLines: 2, overflow: TextOverflow.ellipsis),
+          content: Text(
+            uri.toString(),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text(PairingStrings.cancel)),
-            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text(PairingStrings.open)),
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text(PairingStrings.cancel),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text(PairingStrings.open),
+            ),
           ],
         ),
       );
@@ -660,7 +865,9 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
   }
 
   void _showNotice(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _retry() async {
@@ -685,17 +892,32 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
   Future<void> _close() async {
     final state = ref.read(pairingControllerProvider);
     final connected = ref.read(pairingConnectionProvider).isConnected;
-    if (!connected &&
+    final shouldStop =
+        !connected &&
         ((state.role == PairingRole.sender && state.sessionToken != null && !state.multiRecipient) ||
-            (state.role == PairingRole.receiver && state.phase != PairingPhase.idle))) {
+            (state.role == PairingRole.receiver && state.phase != PairingPhase.idle));
+    _dismiss();
+    if (shouldStop) {
       await ref.notifier(pairingControllerProvider).stop();
     }
-    if (mounted) Navigator.of(context).pop();
   }
 
   Future<void> _stop() async {
+    _dismiss();
     await ref.notifier(pairingControllerProvider).stop();
-    if (mounted) Navigator.of(context).pop();
+  }
+
+  void _dismiss() {
+    if (_dismissed || !mounted) return;
+    _dismissed = true;
+    final navigator = Navigator.of(context);
+    ref
+        .notifier(pairingControllerProvider)
+        .logUiEvent(
+          'receive_card_dismiss',
+          'Popping ${ModalRoute.of(context)?.runtimeType}; canPop=${navigator.canPop()}',
+        );
+    navigator.pop();
   }
 
   @override
@@ -704,7 +926,10 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
     if (state.phase == PairingPhase.joined && !_autoClosed) {
       _autoClosed = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && ref.read(pairingConnectionProvider).isConnected) Navigator.of(context).pop();
+        if (mounted && ref.read(pairingConnectionProvider).isConnected && !_dismissed) {
+          _dismissed = true;
+          Navigator.of(context).pop();
+        }
       });
     }
     final connected = ref.watch(pairingConnectionProvider).isConnected;
@@ -715,8 +940,16 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: SegmentedButton<PairingMode>(
             segments: const [
-              ButtonSegment(value: PairingMode.qr, label: Text(PairingStrings.qrScanner), icon: Icon(Icons.qr_code_scanner)),
-              ButtonSegment(value: PairingMode.sameNetwork, label: Text(PairingStrings.nearby), icon: Icon(Icons.radar)),
+              ButtonSegment(
+                value: PairingMode.qr,
+                label: Text(PairingStrings.qrScanner),
+                icon: Icon(Icons.qr_code_scanner),
+              ),
+              ButtonSegment(
+                value: PairingMode.sameNetwork,
+                label: Text(PairingStrings.nearby),
+                icon: Icon(Icons.radar),
+              ),
             ],
             selected: {_mode},
             onSelectionChanged: (modes) => _switchMode(modes.first),
@@ -727,7 +960,11 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
                 (state.role == PairingRole.sender && state.sessionToken != null)))
           Align(
             alignment: Alignment.centerRight,
-            child: TextButton.icon(onPressed: _stop, icon: const Icon(Icons.stop_circle_outlined), label: const Text(PairingStrings.stop)),
+            child: TextButton.icon(
+              onPressed: _stop,
+              icon: const Icon(Icons.stop_circle_outlined),
+              label: const Text(PairingStrings.stop),
+            ),
           ),
         CheckboxListTile(
           dense: true,
@@ -735,7 +972,7 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
           title: const Text(PairingStrings.encryptedTransfer),
           subtitle: const Text(PairingStrings.secureReceiveHint),
           value: _encrypted,
-          onChanged: (value) => _setEncryption(value == true),
+          onChanged: _encryptionBusy ? null : (value) => _setEncryption(value == true),
         ),
         Expanded(
           child: _mode == PairingMode.qr ? _buildQrScanner(context, state) : _buildNearby(context, state),
@@ -774,9 +1011,22 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
               style: TextStyle(color: Theme.of(context).colorScheme.error),
               textAlign: TextAlign.center,
             ),
-          if (state.ssid != null) _CopyValueRow(label: PairingStrings.ssid, value: state.ssid!, canCopy: false),
-          if (state.password != null) _CopyValueRow(label: PairingStrings.password, value: state.password!, canCopy: true),
-          FilledButton(onPressed: _retry, child: const Text(PairingStrings.imConnected)),
+          if (state.ssid != null)
+            _CopyValueRow(
+              label: PairingStrings.ssid,
+              value: state.ssid!,
+              canCopy: false,
+            ),
+          if (state.password != null)
+            _CopyValueRow(
+              label: PairingStrings.password,
+              value: state.password!,
+              canCopy: true,
+            ),
+          FilledButton(
+            onPressed: _retry,
+            child: const Text(PairingStrings.imConnected),
+          ),
         ] else if (state.phase == PairingPhase.waitingForPin)
           _buildPinPrompt(state)
         else if (state.phase == PairingPhase.failed && state.pinRequired) ...[
@@ -792,7 +1042,9 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
               _handledCode = false;
               _pinController.clear();
               setState(() => _scannerKey++);
-              unawaited(ref.notifier(pairingControllerProvider).enterReceiver());
+              unawaited(
+                ref.notifier(pairingControllerProvider).enterReceiver(),
+              );
             },
             icon: const Icon(Icons.refresh),
             label: const Text(PairingStrings.scanAgain),
@@ -802,7 +1054,12 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
   }
 
   Widget _buildNearby(BuildContext context, PairingState state) {
-    final offers = [...state.offers]..sort((a, b) => a.device.alias.toLowerCase().compareTo(b.device.alias.toLowerCase()));
+    final offers = [...state.offers]
+      ..sort(
+        (a, b) => a.device.alias.toLowerCase().compareTo(
+          b.device.alias.toLowerCase(),
+        ),
+      );
     final scanning = state.phase == PairingPhase.scanning;
     return Column(
       children: [
@@ -815,18 +1072,26 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
                       const SizedBox(height: 4),
                       _RadarView(active: scanning),
                       const SizedBox(height: 8),
-                      const Text(PairingStrings.lookingForSenders, textAlign: TextAlign.center),
+                      const Text(
+                        PairingStrings.lookingForSenders,
+                        textAlign: TextAlign.center,
+                      ),
                       if (!scanning)
                         TextButton.icon(
                           onPressed: _scanNearby,
                           icon: const Icon(Icons.refresh),
                           label: const Text(PairingStrings.retry),
                         ),
-                      TextButton(onPressed: () => unawaited(showPairingConnectionGuide(context)), child: const Text(PairingStrings.howToConnect)),
+                      TextButton(
+                        onPressed: () => unawaited(showPairingConnectionGuide(context)),
+                        child: const Text(PairingStrings.howToConnect),
+                      ),
                       if (state.failureReason != null)
                         Text(
                           state.failureReason!,
-                          style: TextStyle(color: Theme.of(context).colorScheme.error),
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
                           textAlign: TextAlign.center,
                         ),
                     ],
@@ -838,9 +1103,17 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
                     for (final item in offers)
                       Card(
                         child: ListTile(
-                          leading: CircleAvatar(child: Icon(item.device.deviceType.icon)),
-                          title: Text(item.device.alias, maxLines: 1, overflow: TextOverflow.ellipsis),
-                          subtitle: Text(item.device.deviceModel ?? PairingStrings.visibleToNearby),
+                          leading: CircleAvatar(
+                            child: Icon(item.device.deviceType.icon),
+                          ),
+                          title: Text(
+                            item.device.alias,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            item.device.deviceModel ?? PairingStrings.visibleToNearby,
+                          ),
                           trailing: const Icon(Icons.chevron_right),
                           onTap: () => _joinOffer(item),
                         ),
@@ -878,9 +1151,15 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
             keyboardType: TextInputType.number,
             maxLength: 6,
             inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-            decoration: const InputDecoration(labelText: PairingStrings.pinHint, counterText: ''),
+            decoration: const InputDecoration(
+              labelText: PairingStrings.pinHint,
+              counterText: '',
+            ),
           ),
-          FilledButton(onPressed: _retry, child: const Text(PairingStrings.join)),
+          FilledButton(
+            onPressed: _retry,
+            child: const Text(PairingStrings.join),
+          ),
         ],
       ),
     );
@@ -896,7 +1175,11 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
             style: TextStyle(color: Theme.of(context).colorScheme.error),
             textAlign: TextAlign.center,
           ),
-          TextButton.icon(onPressed: _retry, icon: const Icon(Icons.refresh), label: const Text(PairingStrings.retry)),
+          TextButton.icon(
+            onPressed: _retry,
+            icon: const Icon(Icons.refresh),
+            label: const Text(PairingStrings.retry),
+          ),
         ],
       ),
     );
@@ -907,14 +1190,21 @@ class _QrScannerView extends StatefulWidget {
   final void Function(BarcodeCapture capture) onDetect;
   final VoidCallback onRetry;
 
-  const _QrScannerView({required this.onDetect, required this.onRetry, super.key});
+  const _QrScannerView({
+    required this.onDetect,
+    required this.onRetry,
+    super.key,
+  });
 
   @override
   State<_QrScannerView> createState() => _QrScannerViewState();
 }
 
 class _QrScannerViewState extends State<_QrScannerView> with SingleTickerProviderStateMixin {
-  late final AnimationController _sweep = AnimationController(vsync: this, duration: const Duration(milliseconds: 1900))..repeat();
+  late final AnimationController _sweep = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1900),
+  )..repeat();
 
   @override
   void dispose() {
@@ -940,7 +1230,11 @@ class _QrScannerViewState extends State<_QrScannerView> with SingleTickerProvide
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.no_photography_outlined, color: colors.secondary, size: 34),
+                      Icon(
+                        Icons.no_photography_outlined,
+                        color: colors.secondary,
+                        size: 34,
+                      ),
                       const SizedBox(height: 8),
                       Text(
                         error.errorCode == MobileScannerErrorCode.permissionDenied ? PairingStrings.cameraPermissionDenied : error.toString(),
@@ -949,7 +1243,10 @@ class _QrScannerViewState extends State<_QrScannerView> with SingleTickerProvide
                       if (error.errorCode == MobileScannerErrorCode.permissionDenied)
                         Column(
                           children: [
-                            const Text(PairingStrings.cameraPermissionHint, textAlign: TextAlign.center),
+                            const Text(
+                              PairingStrings.cameraPermissionHint,
+                              textAlign: TextAlign.center,
+                            ),
                             TextButton.icon(
                               onPressed: widget.onRetry,
                               icon: const Icon(Icons.refresh),
@@ -966,7 +1263,11 @@ class _QrScannerViewState extends State<_QrScannerView> with SingleTickerProvide
               child: AnimatedBuilder(
                 animation: _sweep,
                 builder: (context, child) => CustomPaint(
-                  painter: _ScannerOverlayPainter(progress: _sweep.value, primary: colors.primary, accent: colors.tertiary),
+                  painter: _ScannerOverlayPainter(
+                    progress: _sweep.value,
+                    primary: colors.primary,
+                    accent: colors.tertiary,
+                  ),
                 ),
               ),
             ),
@@ -989,7 +1290,11 @@ class _ScannerOverlayPainter extends CustomPainter {
   final Color primary;
   final Color accent;
 
-  const _ScannerOverlayPainter({required this.progress, required this.primary, required this.accent});
+  const _ScannerOverlayPainter({
+    required this.progress,
+    required this.primary,
+    required this.accent,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1038,7 +1343,10 @@ class _RadarView extends StatefulWidget {
 }
 
 class _RadarViewState extends State<_RadarView> with SingleTickerProviderStateMixin {
-  late final AnimationController _pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 1800));
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1800),
+  );
 
   @override
   void initState() {
@@ -1071,8 +1379,18 @@ class _RadarViewState extends State<_RadarView> with SingleTickerProviderStateMi
       child: AnimatedBuilder(
         animation: _pulse,
         builder: (context, child) => CustomPaint(
-          painter: _RadarPainter(progress: _pulse.value, primary: colors.primary, accent: colors.tertiary),
-          child: Center(child: Icon(Icons.wifi_tethering, color: colors.secondary, size: 42)),
+          painter: _RadarPainter(
+            progress: _pulse.value,
+            primary: colors.primary,
+            accent: colors.tertiary,
+          ),
+          child: Center(
+            child: Icon(
+              Icons.wifi_tethering,
+              color: colors.secondary,
+              size: 42,
+            ),
+          ),
         ),
       ),
     );
@@ -1084,7 +1402,11 @@ class _RadarPainter extends CustomPainter {
   final Color primary;
   final Color accent;
 
-  const _RadarPainter({required this.progress, required this.primary, required this.accent});
+  const _RadarPainter({
+    required this.progress,
+    required this.primary,
+    required this.accent,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1094,7 +1416,9 @@ class _RadarPainter extends CustomPainter {
       final phase = (progress + index / 3) % 1;
       final radius = maxRadius * phase;
       final paint = Paint()
-        ..color = (index.isEven ? primary : accent).withValues(alpha: (1 - phase) * 0.62)
+        ..color = (index.isEven ? primary : accent).withValues(
+          alpha: (1 - phase) * 0.62,
+        )
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2;
       canvas.drawCircle(center, radius, paint);
@@ -1117,8 +1441,14 @@ class _CardHeader extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(20, 12, 12, 8),
       child: Row(
         children: [
-          Expanded(child: Text(title, style: Theme.of(context).textTheme.titleLarge)),
-          IconButton(tooltip: PairingStrings.close, onPressed: onClose, icon: const Icon(Icons.close)),
+          Expanded(
+            child: Text(title, style: Theme.of(context).textTheme.titleLarge),
+          ),
+          IconButton(
+            tooltip: PairingStrings.close,
+            onPressed: onClose,
+            icon: const Icon(Icons.close),
+          ),
         ],
       ),
     );
@@ -1134,7 +1464,9 @@ class _Countdown extends StatelessWidget {
   Widget build(BuildContext context) {
     final minutes = seconds ~/ 60;
     final remainder = seconds % 60;
-    return Text('${minutes.toString().padLeft(2, '0')}:${remainder.toString().padLeft(2, '0')} ${PairingStrings.remaining}');
+    return Text(
+      '${minutes.toString().padLeft(2, '0')}:${remainder.toString().padLeft(2, '0')} ${PairingStrings.remaining}',
+    );
   }
 }
 
@@ -1145,14 +1477,22 @@ class _JoinedDevices extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (peers.isEmpty) return Padding(padding: const EdgeInsets.all(14), child: Text(PairingStrings.noJoinedDevices));
+    if (peers.isEmpty)
+      return Padding(
+        padding: const EdgeInsets.all(14),
+        child: Text(PairingStrings.noJoinedDevices),
+      );
     return Column(
       children: [
         for (final peer in peers)
           ListTile(
             dense: true,
             leading: const CircleAvatar(child: Icon(Icons.devices)),
-            title: Text(peer.alias, maxLines: 1, overflow: TextOverflow.ellipsis),
+            title: Text(
+              peer.alias,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
             subtitle: peer.deviceModel == null ? null : Text(peer.deviceModel!),
           ),
       ],
@@ -1166,7 +1506,14 @@ class _ProfileHeader extends StatelessWidget {
 
   const _ProfileHeader({required this.alias, required this.avatarIndex});
 
-  static const _avatarIcons = [Icons.person, Icons.face, Icons.account_circle, Icons.pets, Icons.rocket_launch, Icons.bolt];
+  static const _avatarIcons = [
+    Icons.person,
+    Icons.face,
+    Icons.account_circle,
+    Icons.pets,
+    Icons.rocket_launch,
+    Icons.bolt,
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -1174,9 +1521,19 @@ class _ProfileHeader extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 12),
       child: Column(
         children: [
-          CircleAvatar(radius: 30, child: Icon(_avatarIcons[avatarIndex.clamp(0, _avatarIcons.length - 1)], size: 28)),
+          CircleAvatar(
+            radius: 30,
+            child: Icon(
+              _avatarIcons[avatarIndex.clamp(0, _avatarIcons.length - 1)],
+              size: 28,
+            ),
+          ),
           const SizedBox(height: 8),
-          Text(alias, style: Theme.of(context).textTheme.titleMedium, textAlign: TextAlign.center),
+          Text(
+            alias,
+            style: Theme.of(context).textTheme.titleMedium,
+            textAlign: TextAlign.center,
+          ),
         ],
       ),
     );
@@ -1188,7 +1545,11 @@ class _CopyValueRow extends StatelessWidget {
   final String value;
   final bool canCopy;
 
-  const _CopyValueRow({required this.label, required this.value, required this.canCopy});
+  const _CopyValueRow({
+    required this.label,
+    required this.value,
+    required this.canCopy,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1232,7 +1593,10 @@ class _ProgressPanel extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+          const SizedBox.square(
+            dimension: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
           const SizedBox(width: 10),
           Text(message),
         ],
@@ -1274,7 +1638,10 @@ Future<void> showPairingConnectionGuide(BuildContext context) {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(PairingStrings.howToConnect, style: Theme.of(context).textTheme.titleLarge),
+            Text(
+              PairingStrings.howToConnect,
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
             const SizedBox(height: 14),
             _GuideStep(number: '1', text: PairingStrings.guideStepOne),
             _GuideStep(number: '2', text: PairingStrings.guideStepTwo),

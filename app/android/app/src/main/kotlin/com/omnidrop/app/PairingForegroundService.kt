@@ -163,13 +163,19 @@ class PairingForegroundService : Service() {
                     }
 
                     override fun onFailed(reason: Int) {
+                        val code = when (reason) {
+                            ERROR_INCOMPATIBLE_MODE -> "HOTSPOT_INCOMPATIBLE_MODE"
+                            ERROR_NO_CHANNEL -> "HOTSPOT_NO_CHANNEL"
+                            ERROR_TETHERING_DISALLOWED -> "HOTSPOT_TETHERING_DISALLOWED"
+                            else -> "HOTSPOT_START_FAILED"
+                        }
                         val message = when (reason) {
                             ERROR_NO_CHANNEL -> "No Wi-Fi channel is available to start the hotspot."
                             ERROR_INCOMPATIBLE_MODE -> "Wi-Fi is in a mode that cannot start a local-only hotspot."
                             ERROR_TETHERING_DISALLOWED -> "The system does not allow hotspot tethering."
                             else -> "Android could not start the local-only hotspot."
                         }
-                        failToStart("HOTSPOT_START_FAILED", message)
+                        failToStart(code, message)
                     }
                 },
                 Handler(Looper.getMainLooper()),

@@ -16,7 +16,9 @@ Stream<void> get pairingDisconnectEvents {
   if (!_pairingDisconnectHandlerInstalled) {
     _methodChannel.setMethodCallHandler((call) async {
       if (call.method != 'pairingDisconnected') {
-        throw MissingPluginException('Unknown native pairing callback: ${call.method}');
+        throw MissingPluginException(
+          'Unknown native pairing callback: ${call.method}',
+        );
       }
       _pairingDisconnectEvents.add(null);
     });
@@ -57,20 +59,38 @@ Future<List<FileInfo>?> pickFilesAndroid() async {
   return result.map((e) => FileInfoMapper.fromJson((e as Map).cast<String, dynamic>())).toList();
 }
 
-Future<List<FileInfo>> queryMediaFilesAndroid({required String category, int? offset, int? limit}) async {
+Future<List<FileInfo>> queryMediaFilesAndroid({
+  required String category,
+  int? offset,
+  int? limit,
+}) async {
   final arguments = <String, Object?>{'category': category};
   if (offset != null) arguments['offset'] = offset;
   if (limit != null) arguments['limit'] = limit;
-  final result = await _methodChannel.invokeMethod<List>('queryMediaFiles', arguments);
-  return (result ?? []).map((file) => FileInfoMapper.fromJson((file as Map).cast<String, dynamic>())).toList();
+  final result = await _methodChannel.invokeMethod<List>(
+    'queryMediaFiles',
+    arguments,
+  );
+  return (result ?? [])
+      .map(
+        (file) => FileInfoMapper.fromJson((file as Map).cast<String, dynamic>()),
+      )
+      .toList();
 }
 
-Future<Uint8List?> loadMediaThumbnailAndroid({required String uri, required String category}) =>
-    _methodChannel.invokeMethod<Uint8List>('loadMediaThumbnail', {'uri': uri, 'category': category});
+Future<Uint8List?> loadMediaThumbnailAndroid({
+  required String uri,
+  required String category,
+}) => _methodChannel.invokeMethod<Uint8List>('loadMediaThumbnail', {
+  'uri': uri,
+  'category': category,
+});
 
 Future<String?> pickFolderTreeAndroid() => pickStorageTreeAndroid();
 
-Future<String?> pickStorageTreeAndroid({String storage = 'internal'}) => _methodChannel.invokeMethod<String>('pickStorageTree', {'storage': storage});
+Future<String?> pickStorageTreeAndroid({String storage = 'internal'}) => _methodChannel.invokeMethod<String>('pickStorageTree', {
+  'storage': storage,
+});
 
 Future<String?> getStorageTreeAndroid({String storage = 'internal'}) => _methodChannel.invokeMethod<String>('getStorageTree', {'storage': storage});
 
@@ -79,16 +99,34 @@ Future<String> getSaveLocationAndroid() async => await _methodChannel.invokeMeth
 Future<bool> hasRemovableStorageAndroid() async => await _methodChannel.invokeMethod<bool>('hasRemovableStorage') ?? false;
 
 Future<bool> setSaveLocationAndroid({required String storage}) async =>
-    await _methodChannel.invokeMethod<bool>('setSaveLocation', {'storage': storage}) ?? false;
+    await _methodChannel.invokeMethod<bool>('setSaveLocation', {
+      'storage': storage,
+    }) ??
+    false;
 
-Future<List<AndroidBrowseEntry>> listFolderTreeAndroid({required String uri}) async {
-  final result = await _methodChannel.invokeMethod<List>('listFolderTree', {'uri': uri});
-  return (result ?? []).map((entry) => AndroidBrowseEntry.fromMap((entry as Map).cast<String, dynamic>())).toList();
+Future<List<AndroidBrowseEntry>> listFolderTreeAndroid({
+  required String uri,
+}) async {
+  final result = await _methodChannel.invokeMethod<List>('listFolderTree', {
+    'uri': uri,
+  });
+  return (result ?? [])
+      .map(
+        (entry) => AndroidBrowseEntry.fromMap((entry as Map).cast<String, dynamic>()),
+      )
+      .toList();
 }
 
 Future<List<FileInfo>> listFolderTreeFilesAndroid({required String uri}) async {
-  final result = await _methodChannel.invokeMethod<List>('listFolderTreeFiles', {'uri': uri});
-  return (result ?? []).map((file) => FileInfoMapper.fromJson((file as Map).cast<String, dynamic>())).toList();
+  final result = await _methodChannel.invokeMethod<List>(
+    'listFolderTreeFiles',
+    {'uri': uri},
+  );
+  return (result ?? [])
+      .map(
+        (file) => FileInfoMapper.fromJson((file as Map).cast<String, dynamic>()),
+      )
+      .toList();
 }
 
 /// Returns the global "Download" directory, e.g. /storage/emulated/0/Download.
@@ -109,20 +147,19 @@ Future<bool> getSystemAnimationsStatusAndroid() async {
 /// Returns true when granted or when running on an older Android version.
 Future<bool> requestLocalNetworkPermissionAndroid() async {
   try {
-    return await _methodChannel.invokeMethod<bool>('requestLocalNetworkPermission') ?? false;
+    return await _methodChannel.invokeMethod<bool>(
+          'requestLocalNetworkPermission',
+        ) ??
+        false;
   } catch (e) {
     _logger.warning('Could not request local network permission', e);
     return false;
   }
 }
 
-Future<void> openContentUri({
-  required String uri,
-}) async {
+Future<void> openContentUri({required String uri}) async {
   _logger.info('Opening content URI: $uri');
-  await _methodChannel.invokeMethod('openContentUri', {
-    'uri': uri,
-  });
+  await _methodChannel.invokeMethod('openContentUri', {'uri': uri});
 }
 
 /// Tells MainActivity that the Dart side is now subscribed to the share_handler media stream,
@@ -157,8 +194,13 @@ Future<void> openWifiSettingsAndroid() async {
   await _methodChannel.invokeMethod<void>('openWifiSettings');
 }
 
-Future<AndroidLocalOnlyHotspot> startLocalOnlyHotspotAndroid({bool prefer5GHz = false}) async {
-  final result = await _methodChannel.invokeMethod<Map>('startLocalOnlyHotspot', {'prefer5GHz': prefer5GHz});
+Future<AndroidLocalOnlyHotspot> startLocalOnlyHotspotAndroid({
+  bool prefer5GHz = false,
+}) async {
+  final result = await _methodChannel.invokeMethod<Map>(
+    'startLocalOnlyHotspot',
+    {'prefer5GHz': prefer5GHz},
+  );
   final ssid = result?['ssid'];
   final password = result?['password'];
   final supports5GHz = result?['supports5GHz'];
@@ -172,7 +214,9 @@ Future<AndroidLocalOnlyHotspot> startLocalOnlyHotspotAndroid({bool prefer5GHz = 
       canRequest5GHz is! bool ||
       hostIp is! String ||
       hostIp.isEmpty) {
-    throw const FormatException('Android returned invalid local-only hotspot details.');
+    throw const FormatException(
+      'Android returned invalid local-only hotspot details.',
+    );
   }
   return AndroidLocalOnlyHotspot(
     ssid: ssid,
@@ -195,12 +239,20 @@ Future<void> stopPairingKeepAliveAndroid() async {
   await _methodChannel.invokeMethod<void>('stopPairingKeepAlive');
 }
 
-Future<AndroidHotspotConnectionResult> connectToWifiHotspotAndroid({required String ssid, required String password}) async {
-  final result = await _methodChannel.invokeMethod<Map>('connectToWifiHotspot', {'ssid': ssid, 'password': password});
+Future<AndroidHotspotConnectionResult> connectToWifiHotspotAndroid({
+  required String ssid,
+  required String password,
+}) async {
+  final result = await _methodChannel.invokeMethod<Map>(
+    'connectToWifiHotspot',
+    {'ssid': ssid, 'password': password},
+  );
   final code = result?['code'];
   final message = result?['message'];
   if (code is! String || message is! String) {
-    throw const FormatException('Android returned an invalid Wi-Fi connection result.');
+    throw const FormatException(
+      'Android returned an invalid Wi-Fi connection result.',
+    );
   }
   return AndroidHotspotConnectionResult(code: code, message: message);
 }
@@ -215,29 +267,48 @@ Future<AndroidWifiEnableResult> enableWifiAndroid() async {
   final path = result?['path'];
   final message = result?['message'];
   if (success is! bool || path is! String) {
-    throw const FormatException('Android returned an invalid Wi-Fi enable result.');
+    throw const FormatException(
+      'Android returned an invalid Wi-Fi enable result.',
+    );
   }
-  return AndroidWifiEnableResult(success: success, path: path, message: message is String ? message : null);
+  return AndroidWifiEnableResult(
+    success: success,
+    path: path,
+    message: message is String ? message : null,
+  );
 }
 
 Future<bool> is5GHzBandSupportedAndroid() async {
-  final supported = await _methodChannel.invokeMethod<bool>('is5GHzBandSupported');
-  if (supported == null) throw const FormatException('Android did not return Wi-Fi band capability.');
+  final supported = await _methodChannel.invokeMethod<bool>(
+    'is5GHzBandSupported',
+  );
+  if (supported == null)
+    throw const FormatException(
+      'Android did not return Wi-Fi band capability.',
+    );
   return supported;
 }
 
 Future<bool> canRequest5GHzAndroid() async {
   final canRequest = await _methodChannel.invokeMethod<bool>('canRequest5GHz');
-  if (canRequest == null) throw const FormatException('Android did not return Wi-Fi band request capability.');
+  if (canRequest == null)
+    throw const FormatException(
+      'Android did not return Wi-Fi band request capability.',
+    );
   return canRequest;
 }
 
 Future<List<AndroidPairingLogEntry>> getNativePairingLogAndroid() async {
-  final entries = await _methodChannel.invokeMethod<List>('getNativePairingLog');
+  final entries = await _methodChannel.invokeMethod<List>(
+    'getNativePairingLog',
+  );
   return (entries ?? []).map((entry) {
     if (entry is! Map || entry['timestamp'] is! int || entry['step'] is! String || entry['message'] is! String) {
-      throw const FormatException('Android returned an invalid native pairing log entry.');
+      throw const FormatException(
+        'Android returned an invalid native pairing log entry.',
+      );
     }
+
     return AndroidPairingLogEntry(
       timestamp: DateTime.fromMillisecondsSinceEpoch(entry['timestamp'] as int),
       step: entry['step'] as String,
@@ -245,6 +316,8 @@ Future<List<AndroidPairingLogEntry>> getNativePairingLogAndroid() async {
     );
   }).toList();
 }
+
+Future<String?> getLastNativeCrashAndroid() => _methodChannel.invokeMethod<String>('getLastNativeCrash');
 
 Future<void> openAppNotificationSettingsAndroid() async {
   await _methodChannel.invokeMethod<void>('openAppNotificationSettings');
@@ -274,7 +347,10 @@ class AndroidHotspotConnectionResult {
   final String code;
   final String message;
 
-  const AndroidHotspotConnectionResult({required this.code, required this.message});
+  const AndroidHotspotConnectionResult({
+    required this.code,
+    required this.message,
+  });
 
   bool get succeeded => code == 'success';
 }
@@ -284,7 +360,11 @@ class AndroidWifiEnableResult {
   final String path;
   final String? message;
 
-  const AndroidWifiEnableResult({required this.success, required this.path, required this.message});
+  const AndroidWifiEnableResult({
+    required this.success,
+    required this.path,
+    required this.message,
+  });
 }
 
 class AndroidPairingLogEntry {
@@ -292,7 +372,11 @@ class AndroidPairingLogEntry {
   final String step;
   final String message;
 
-  const AndroidPairingLogEntry({required this.timestamp, required this.step, required this.message});
+  const AndroidPairingLogEntry({
+    required this.timestamp,
+    required this.step,
+    required this.message,
+  });
 }
 
 @MappableClass()
@@ -300,10 +384,7 @@ class PickDirectoryResult with PickDirectoryResultMappable {
   final String directoryUri;
   final List<FileInfo> files;
 
-  PickDirectoryResult({
-    required this.directoryUri,
-    required this.files,
-  });
+  PickDirectoryResult({required this.directoryUri, required this.files});
 }
 
 @MappableClass()

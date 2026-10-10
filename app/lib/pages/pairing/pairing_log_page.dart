@@ -18,6 +18,8 @@ class _PairingLogPageState extends State<PairingLogPage> with Refena {
   Object? _error;
   String? _lastCrash;
   Object? _crashReadError;
+  String? _lastNativeCrash;
+  Object? _nativeCrashReadError;
   bool _loading = true;
 
   @override
@@ -50,14 +52,32 @@ class _PairingLogPageState extends State<PairingLogPage> with Refena {
       } catch (error) {
         if (mounted) setState(() => _crashReadError = error);
       }
+      try {
+        final lastNativeCrash = await ref.notifier(pairingControllerProvider).readLastNativeCrashReport();
+        if (mounted) {
+          setState(() {
+            _lastNativeCrash = lastNativeCrash;
+            _nativeCrashReadError = null;
+          });
+        }
+      } catch (error) {
+        if (mounted) setState(() => _nativeCrashReadError = error);
+      }
       if (mounted) setState(() => _loading = false);
     }
   }
 
   Future<void> _copy() async {
-    final text = _entries.map((entry) => '${entry.timestamp.toIso8601String()} [${entry.step}] ${entry.message}').join('\n');
+    final text = _entries
+        .map(
+          (entry) => '${entry.timestamp.toIso8601String()} [${entry.step}] ${entry.message}',
+        )
+        .join('\n');
     await Clipboard.setData(ClipboardData(text: text));
-    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Pairing log copied')));
+    if (mounted)
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Pairing log copied')));
   }
 
   @override
@@ -66,8 +86,16 @@ class _PairingLogPageState extends State<PairingLogPage> with Refena {
       appBar: AppBar(
         title: const Text('Pairing log'),
         actions: [
-          IconButton(tooltip: 'Refresh', onPressed: _loading ? null : _refresh, icon: const Icon(Icons.refresh)),
-          IconButton(tooltip: 'Copy', onPressed: _entries.isEmpty ? null : _copy, icon: const Icon(Icons.copy)),
+          IconButton(
+            tooltip: 'Refresh',
+            onPressed: _loading ? null : _refresh,
+            icon: const Icon(Icons.refresh),
+          ),
+          IconButton(
+            tooltip: 'Copy',
+            onPressed: _entries.isEmpty ? null : _copy,
+            icon: const Icon(Icons.copy),
+          ),
         ],
       ),
       body: Column(
@@ -80,12 +108,42 @@ class _PairingLogPageState extends State<PairingLogPage> with Refena {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Last crash', style: Theme.of(context).textTheme.titleMedium),
+                    Text(
+                      'Last crash',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
                     const SizedBox(height: 8),
                     ConstrainedBox(
                       constraints: const BoxConstraints(maxHeight: 180),
                       child: SingleChildScrollView(
-                        child: SelectableText(_crashReadError == null ? _lastCrash! : 'Could not read crash report: $_crashReadError'),
+                        child: SelectableText(
+                          _crashReadError == null ? _lastCrash! : 'Could not read crash report: $_crashReadError',
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          if (_lastNativeCrash != null || _nativeCrashReadError != null)
+            Card(
+              margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Last native crash',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 8),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 180),
+                      child: SingleChildScrollView(
+                        child: SelectableText(
+                          _nativeCrashReadError == null ? _lastNativeCrash! : 'Could not read native crash report: $_nativeCrashReadError',
+                        ),
                       ),
                     ),
                   ],
@@ -97,7 +155,10 @@ class _PairingLogPageState extends State<PairingLogPage> with Refena {
                 ? const Center(child: CircularProgressIndicator())
                 : _error != null
                 ? Center(
-                    child: Padding(padding: const EdgeInsets.all(24), child: Text('Could not load pairing log: $_error')),
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text('Could not load pairing log: $_error'),
+                    ),
                   )
                 : _entries.isEmpty
                 ? const Center(child: Text('No pairing log entries'))
@@ -108,7 +169,9 @@ class _PairingLogPageState extends State<PairingLogPage> with Refena {
                       return ListTile(
                         dense: true,
                         title: Text(entry.step),
-                        subtitle: Text('${entry.timestamp.toLocal().toIso8601String()}\n${entry.message}'),
+                        subtitle: Text(
+                          '${entry.timestamp.toLocal().toIso8601String()}\n${entry.message}',
+                        ),
                       );
                     },
                   ),
