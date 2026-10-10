@@ -489,18 +489,15 @@ class _CompactStatColumn extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        for (var index = 0; index < stats.length; index++)
+        for (var index = 0; index < stats.length; index++) ...[
           Expanded(
-            child: Padding(
-              padding: EdgeInsets.only(
-                bottom: index == stats.length - 1 ? 0 : 4,
-              ),
-              child: _CompactStat(
-                label: stats[index].$1,
-                value: stats[index].$2,
-              ),
+            child: _CompactStat(
+              label: stats[index].$1,
+              value: stats[index].$2,
             ),
           ),
+          if (index != stats.length - 1) const SizedBox(height: 4),
+        ],
       ],
     );
   }
