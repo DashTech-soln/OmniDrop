@@ -88,6 +88,8 @@ jobs:
         working-directory: ${{ env.APK_BUILD_DIR }}
         run: |
           if [ ! -s app/android/key.properties ] || [ ! -s secrets/android-keystore.jks ]; then
+            rm -f secrets/android-keystore.jks app/android/key.properties
+            mkdir -p secrets
             echo "Release signing secrets are unavailable; generating an ephemeral CI keystore."
             STORE_PASSWORD=$(openssl rand -hex 24)
             keytool -genkeypair -noprompt -keystore secrets/android-keystore.jks \
