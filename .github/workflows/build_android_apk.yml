@@ -97,7 +97,7 @@ jobs:
               -alias omnidrop-ci -keyalg RSA -keysize 2048 -validity 10000 \
               -dname "CN=OmniDrop CI"
             cat > app/android/key.properties <<EOF
-          storeFile=../../secrets/android-keystore.jks
+          storeFile=$PWD/secrets/android-keystore.jks
           storePassword=$STORE_PASSWORD
           keyAlias=omnidrop-ci
           keyPassword=$STORE_PASSWORD
