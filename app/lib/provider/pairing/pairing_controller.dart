@@ -35,6 +35,20 @@ String _safePairingError(Object error) {
 
 bool _isPairingPinError(Object error) => error.toString().toLowerCase().contains('pin');
 
+String friendlyPairingError(Object error) {
+  if (error is PlatformException) {
+    return switch (error.code) {
+      'HOTSPOT_INCOMPATIBLE_MODE' => PairingStrings.hotspotIncompatibleMode,
+      'HOTSPOT_LOCATION_DISABLED' => PairingStrings.locationServicesRequired,
+      'HOTSPOT_PERMISSION_DENIED' || 'HOTSPOT_NOTIFICATION_PERMISSION_DENIED' => PairingStrings.hotspotPermissionRequired,
+      'HOTSPOT_START_FAILED' || 'HOTSPOT_SERVICE_FAILED' || 'HOTSPOT_UNAVAILABLE' => PairingStrings.hotspotStartFailed,
+      _ => PairingStrings.operationFailed,
+    };
+  }
+  if (error is _PairingHeartbeatException) return PairingStrings.connectionUnstable;
+  return PairingStrings.operationFailed;
+}
+
 int _pairingHeartbeatPort(int serverPort) => 15000 + serverPort % 10000;
 
 String _normalizedIp(String ip) => ip.split('%').first.replaceFirst(RegExp(r'^::ffff:'), '');
@@ -172,6 +186,8 @@ enum PairingPhase {
   manualGuide,
 }
 
+enum PairingHotspotPhase { stopped, starting, active, stopping }
+
 class PairingOptions {
   final PairingMode mode;
   final bool multiRecipient;
@@ -249,6 +265,8 @@ class PairingState {
   final bool? wifiEnabled;
   final List<PairingLogEntry> dartLog;
   final bool canUse5GMode;
+  final bool locationSettingsRequired;
+  final PairingHotspotPhase hotspotPhase;
 
   const PairingState({
     required this.phase,
@@ -270,6 +288,8 @@ class PairingState {
     this.wifiEnabled,
     this.dartLog = const [],
     this.canUse5GMode = false,
+    this.locationSettingsRequired = false,
+    this.hotspotPhase = PairingHotspotPhase.stopped,
   });
 
   static const _unset = Object();
@@ -294,6 +314,8 @@ class PairingState {
     Object? wifiEnabled = _unset,
     List<PairingLogEntry>? dartLog,
     bool? canUse5GMode,
+    bool? locationSettingsRequired,
+    PairingHotspotPhase? hotspotPhase,
   }) {
     return PairingState(
       phase: phase ?? this.phase,
@@ -315,6 +337,8 @@ class PairingState {
       wifiEnabled: identical(wifiEnabled, _unset) ? this.wifiEnabled : wifiEnabled as bool?,
       dartLog: dartLog ?? this.dartLog,
       canUse5GMode: canUse5GMode ?? this.canUse5GMode,
+      locationSettingsRequired: locationSettingsRequired ?? this.locationSettingsRequired,
+      hotspotPhase: hotspotPhase ?? this.hotspotPhase,
     );
   }
 }
@@ -324,16 +348,18 @@ class PairingController extends Notifier<PairingState> {
 
   android_channel.AndroidLocalOnlyHotspot? _hotspot;
   Timer? _expiryTimer;
-  StreamSubscription<void>? _disconnectSubscription;
+  StreamSubscription<String?>? _disconnectSubscription;
   final List<StreamSubscription<HttpServerEvent>> _sessionSubscriptions = [];
   RawDatagramSocket? _peerSocket;
   Timer? _peerHeartbeatTimer;
   String? _peerSessionToken;
   String? _localFingerprint;
   final Map<String, DateTime> _peerLastSeen = {};
+  final Map<String, int> _missedHeartbeats = {};
   PairQrPayload? _lastQrPayload;
   PairingNearbyOffer? _lastNearbyOffer;
   bool _stopping = false;
+  bool _hotspotStarting = false;
 
   @override
   PairingState init() => const PairingState(phase: PairingPhase.idle);
@@ -348,6 +374,16 @@ class PairingController extends Notifier<PairingState> {
     );
   }
 
+  void _runUnawaited(String step, Future<void> Function() operation) {
+    unawaited(() async {
+      try {
+        await operation();
+      } catch (error) {
+        _log(step, 'Asynchronous pairing operation failed: ${_safePairingError(error)}');
+      }
+    }());
+  }
+
   void logUiEvent(String step, String message) => _log(step, message);
 
   static bool isValidPin(String? pin) => pin != null && RegExp(r'^\d{6}$').hasMatch(pin);
@@ -355,10 +391,33 @@ class PairingController extends Notifier<PairingState> {
   String suggestPin() => generatePairingPin();
 
   Future<void> startSender(PairingOptions options) async {
-    if (state.sessionToken != null || state.phase == PairingPhase.startingHotspot || state.phase == PairingPhase.startingSession) return;
+    if (_stopping || _hotspotStarting || state.phase == PairingPhase.startingHotspot || state.phase == PairingPhase.startingSession) return;
+    if (ref.read(pairingConnectionProvider).isConnected) return;
     final pin = options.validatedPin;
+    final previousToken = state.sessionToken;
+    if (previousToken != null) {
+      _expiryTimer?.cancel();
+      _expiryTimer = null;
+      for (final subscription in _sessionSubscriptions) {
+        await subscription.cancel();
+      }
+      _sessionSubscriptions.clear();
+      _stopPeerMonitor(notifyPeer: false, token: null, peers: const []);
+      await ref
+          .redux(parentIsolateProvider)
+          .dispatchTakeResult(
+            IsolateHttpServerPairingAction(
+              task: HttpServerPairingTask(
+                operation: HttpServerPairingOperation.invalidate,
+                sessionToken: previousToken,
+              ),
+            ),
+          )
+          .drain<void>();
+    }
+    _hotspotStarting = true;
     state = PairingState(
-      phase: options.mode == PairingMode.qr ? PairingPhase.startingHotspot : PairingPhase.startingSession,
+      phase: options.mode == PairingMode.qr && _hotspot == null ? PairingPhase.startingHotspot : PairingPhase.startingSession,
       role: PairingRole.sender,
       mode: options.mode,
       pin: pin,
@@ -366,6 +425,13 @@ class PairingController extends Notifier<PairingState> {
       multiRecipient: options.multiRecipient,
       encrypted: options.encrypted,
       dartLog: state.dartLog,
+      ssid: _hotspot?.ssid,
+      password: _hotspot?.password,
+      hotspotPhase: _hotspot == null
+          ? options.mode == PairingMode.qr
+                ? PairingHotspotPhase.starting
+                : PairingHotspotPhase.stopped
+          : PairingHotspotPhase.active,
     );
     _log('sender_start', 'Starting pairing session');
 
@@ -375,9 +441,10 @@ class PairingController extends Notifier<PairingState> {
           canUse5GMode: await android_channel.canRequest5GHzAndroid(),
         );
       }
-      if (options.mode == PairingMode.qr) {
+      if (options.mode == PairingMode.qr && _hotspot == null) {
         if (!checkPlatform([TargetPlatform.android])) throw StateError('QR pairing hotspot is available on Android only.');
         _hotspot = await android_channel.startLocalOnlyHotspotAndroid();
+        state = state.copyWith(hotspotPhase: PairingHotspotPhase.active);
         await _listenForNativeDisconnect();
         _log('hotspot_started', 'Pairing hotspot started');
       }
@@ -410,7 +477,7 @@ class PairingController extends Notifier<PairingState> {
       }
 
       final localDevice = ref.read(deviceFullInfoProvider);
-      final hostIp = _hotspot?.hostIp ?? ref.read(localIpProvider).localIps.firstOrNull;
+      final hostIp = options.mode == PairingMode.qr ? _hotspot?.hostIp : _hotspot?.hostIp ?? ref.read(localIpProvider).localIps.firstOrNull;
       if (hostIp == null || hostIp.isEmpty || localDevice.port < 1) throw StateError('No usable local host address is available.');
       final sender = PairingDeviceInfo(
         fingerprint: localDevice.fingerprint,
@@ -475,19 +542,25 @@ class PairingController extends Notifier<PairingState> {
       _listenToSession(token);
       await _startPeerMonitor(token, localDevice.port, localDevice.fingerprint);
       _expiryTimer = Timer(sessionLifetime, () {
-        if (state.peers.isEmpty) unawaited(stop(expired: true));
+        if (state.peers.isEmpty) _runUnawaited('session_expiry_failed', () => stop(expired: true));
       });
     } catch (error) {
-      _log('sender_failed', 'Pairing session could not be started');
-      await _cleanupFailedStart();
-      final failureReason = error is PlatformException && error.code == 'HOTSPOT_INCOMPATIBLE_MODE'
-          ? 'HOTSPOT_INCOMPATIBLE_MODE: ${error.message ?? error.code}'
-          : error.toString();
+      _log('sender_failed', 'Pairing session could not be started: ${_safePairingError(error)}');
+      try {
+        await _cleanupFailedStart();
+      } catch (cleanupError) {
+        _log('sender_cleanup_failed', 'Could not clean up failed session: ${_safePairingError(cleanupError)}');
+      }
+      final failureReason = friendlyPairingError(error);
       state = state.copyWith(
         phase: PairingPhase.failed,
         failureReason: failureReason,
+        locationSettingsRequired: error is PlatformException && error.code == 'HOTSPOT_LOCATION_DISABLED',
+        hotspotPhase: _hotspot == null ? PairingHotspotPhase.stopped : PairingHotspotPhase.active,
       );
       rethrow;
+    } finally {
+      _hotspotStarting = false;
     }
   }
 
@@ -530,13 +603,13 @@ class PairingController extends Notifier<PairingState> {
           for (final peer in updated) {
             _peerLastSeen.putIfAbsent(peer.fingerprint, DateTime.now);
           }
-          unawaited(_keepPairingServiceAlive());
+          _runUnawaited('service_keepalive_failed', _keepPairingServiceAlive);
           _log('peer_joined', 'A receiver joined the pairing session');
         },
         onError: (Object error) {
           state = state.copyWith(
             phase: PairingPhase.failed,
-            failureReason: error.toString(),
+            failureReason: friendlyPairingError(error),
           );
         },
       ),
@@ -554,12 +627,14 @@ class PairingController extends Notifier<PairingState> {
     _sessionSubscriptions.add(
       controls.listen(
         (event) {
-          if (event is HttpServerPairingEvent && event.controlEvent != null) unawaited(handleControlEvent(event.controlEvent!));
+          if (event is HttpServerPairingEvent && event.controlEvent != null) {
+            _runUnawaited('control_event_failed', () => handleControlEvent(event.controlEvent!));
+          }
         },
         onError: (Object error) {
           state = state.copyWith(
             phase: PairingPhase.failed,
-            failureReason: error.toString(),
+            failureReason: friendlyPairingError(error),
           );
         },
       ),
@@ -572,22 +647,30 @@ class PairingController extends Notifier<PairingState> {
       case 'paired':
         _expiryTimer?.cancel();
         _expiryTimer = null;
+        final singleRecipient = !state.multiRecipient;
         state = state.copyWith(
-          phase: state.multiRecipient ? PairingPhase.peerJoined : PairingPhase.closedForSelection,
+          phase: singleRecipient ? PairingPhase.closedForSelection : PairingPhase.peerJoined,
           controlEvent: event,
         );
-        if (!state.multiRecipient) await _finalizeSelection();
+        if (singleRecipient) {
+          await _finalizeSelection();
+          state = state.copyWith(sessionToken: null);
+          ref.notifier(pairingConnectionProvider).clear();
+        }
+        break;
       case 'lockedOut':
         state = state.copyWith(
           phase: PairingPhase.failed,
           failureReason: 'Pairing is locked after too many incorrect PIN attempts.',
           controlEvent: event,
         );
+        break;
       case 'finalized':
         state = state.copyWith(
           phase: PairingPhase.closedForSelection,
           controlEvent: event,
         );
+        break;
     }
   }
 
@@ -618,7 +701,7 @@ class PairingController extends Notifier<PairingState> {
     } catch (error) {
       state = state.copyWith(
         phase: PairingPhase.failed,
-        failureReason: error.toString(),
+        failureReason: friendlyPairingError(error),
       );
     }
   }
@@ -643,14 +726,15 @@ class PairingController extends Notifier<PairingState> {
     if (expired && state.peers.isNotEmpty) return;
     _stopping = true;
     final previousState = state;
-    _log(
-      expired
-          ? 'session_expired'
-          : disconnected
-          ? 'native_disconnect'
-          : 'user_stop',
-      'Pairing session stopped',
-    );
+    final teardownReason = expired
+        ? 'expiry'
+        : disconnected
+        ? peerDisconnected
+              ? 'peer_heartbeat_timeout'
+              : 'native_disconnect'
+        : 'manual_stop';
+    _log('teardown_reason', teardownReason);
+    if (expired) _log('session_expired', 'Pairing session expired');
     _expiryTimer?.cancel();
     _expiryTimer = null;
     final connection = ref.read(pairingConnectionProvider);
@@ -660,9 +744,14 @@ class PairingController extends Notifier<PairingState> {
       token: previousState.sessionToken ?? connection.sessionToken,
       peers: peers.isEmpty ? previousState.peers : peers,
     );
-    await _disconnectSubscription?.cancel();
-    _disconnectSubscription = null;
     Object? failure;
+    try {
+      await _disconnectSubscription?.cancel();
+    } catch (error) {
+      failure ??= error;
+      _log('native_disconnect_listener_cancel_failed', _safePairingError(error));
+    }
+    _disconnectSubscription = null;
     final token = state.sessionToken;
     if (token != null) {
       try {
@@ -689,14 +778,20 @@ class PairingController extends Notifier<PairingState> {
       }
     }
     for (final subscription in _sessionSubscriptions) {
-      await subscription.cancel();
+      try {
+        await subscription.cancel();
+      } catch (error) {
+        failure ??= error;
+        _log('session_listener_cancel_failed', _safePairingError(error));
+      }
     }
     _sessionSubscriptions.clear();
-    final shouldStopHotspot = _hotspot != null && (!disconnected || peerDisconnected);
-    _hotspot = null;
+    final shouldStopHotspot = _hotspot != null;
     if (shouldStopHotspot) {
       try {
+        state = state.copyWith(hotspotPhase: PairingHotspotPhase.stopping);
         await android_channel.stopLocalOnlyHotspotAndroid();
+        _hotspot = null;
       } catch (error) {
         failure ??= error;
       }
@@ -722,7 +817,9 @@ class PairingController extends Notifier<PairingState> {
       mode: null,
       pin: null,
       pinRequired: false,
-      failureReason: failure?.toString() ?? (expired ? 'Pairing session expired.' : null),
+      failureReason: failure == null ? (expired ? PairingStrings.sessionExpired : null) : friendlyPairingError(failure),
+      locationSettingsRequired: false,
+      hotspotPhase: _hotspot == null ? PairingHotspotPhase.stopped : PairingHotspotPhase.active,
     );
     _lastQrPayload = null;
     _lastNearbyOffer = null;
@@ -734,6 +831,10 @@ class PairingController extends Notifier<PairingState> {
     _stopPeerMonitor(notifyPeer: false, token: null, peers: const []);
     await _disconnectSubscription?.cancel();
     _disconnectSubscription = null;
+    for (final subscription in _sessionSubscriptions) {
+      await subscription.cancel();
+    }
+    _sessionSubscriptions.clear();
     final token = state.sessionToken;
     if (token != null) {
       await ref
@@ -747,10 +848,6 @@ class PairingController extends Notifier<PairingState> {
             ),
           )
           .drain<void>();
-    }
-    if (_hotspot != null) {
-      _hotspot = null;
-      await android_channel.stopLocalOnlyHotspotAndroid();
     }
   }
 
@@ -782,7 +879,7 @@ class PairingController extends Notifier<PairingState> {
         state = state.copyWith(
           phase: PairingPhase.failed,
           wifiEnabled: false,
-          failureReason: result.message ?? 'Wi-Fi could not be enabled (${result.path}).',
+          failureReason: PairingStrings.wifiCouldNotBeEnabled,
         );
         _log('wifi_enable_failed', 'Wi-Fi could not be enabled');
       } else {
@@ -797,7 +894,7 @@ class PairingController extends Notifier<PairingState> {
       state = state.copyWith(
         phase: PairingPhase.failed,
         wifiEnabled: false,
-        failureReason: error.toString(),
+        failureReason: friendlyPairingError(error),
       );
       _log('wifi_enable_failed', 'Wi-Fi could not be enabled');
     }
@@ -824,7 +921,7 @@ class PairingController extends Notifier<PairingState> {
         if (!result.succeeded) {
           state = state.copyWith(
             phase: PairingPhase.manualGuide,
-            failureReason: 'Automatic Wi-Fi connection failed (${result.code}): ${result.message}',
+            failureReason: result.code == 'user_denied' ? PairingStrings.hotspotConnectionDenied : PairingStrings.hotspotConnectionFailed,
           );
           _log('wifi_connect_failed', 'Automatic Wi-Fi connection failed');
           return;
@@ -832,7 +929,7 @@ class PairingController extends Notifier<PairingState> {
       } catch (error) {
         state = state.copyWith(
           phase: PairingPhase.manualGuide,
-          failureReason: error.toString(),
+          failureReason: friendlyPairingError(error),
         );
         _log('wifi_connect_failed', 'Automatic Wi-Fi connection failed');
         return;
@@ -954,7 +1051,7 @@ class PairingController extends Notifier<PairingState> {
             ? 'A six-digit PIN is required or incorrect.'
             : status == 429
             ? 'Pairing is locked after too many incorrect PIN attempts.'
-            : error.toString(),
+            : friendlyPairingError(error),
       );
       _log('join_failed', 'Could not join pairing session');
     }
@@ -1026,7 +1123,7 @@ class PairingController extends Notifier<PairingState> {
     } catch (error) {
       state = state.copyWith(
         phase: PairingPhase.failed,
-        failureReason: error.toString(),
+        failureReason: friendlyPairingError(error),
       );
       _log('nearby_scan_failed', 'Could not search for nearby pairing offers');
     }
@@ -1101,7 +1198,7 @@ class PairingController extends Notifier<PairingState> {
             ? 'A six-digit PIN is required or incorrect.'
             : status == 429
             ? 'Pairing is locked after too many incorrect PIN attempts.'
-            : error.toString(),
+            : friendlyPairingError(error),
       );
       _log('nearby_join_failed', 'Could not join nearby pairing offer');
     }
@@ -1167,7 +1264,10 @@ class PairingController extends Notifier<PairingState> {
       ..._startupTimingEntries,
       ...state.dartLog,
     ]..sort((a, b) => a.timestamp.compareTo(b.timestamp));
-    return entries;
+    return [
+      ...entries.where((entry) => entry.step == 'previous_run_unexpectedly'),
+      ...entries.where((entry) => entry.step != 'previous_run_unexpectedly'),
+    ];
   }
 
   Future<String?> readLastNativeCrashReport() async {
@@ -1182,7 +1282,16 @@ class PairingController extends Notifier<PairingState> {
   Future<void> _listenForNativeDisconnect() async {
     if (!checkPlatform([TargetPlatform.android]) || _disconnectSubscription != null) return;
     _disconnectSubscription = android_channel.pairingDisconnectEvents.listen(
-      (_) => unawaited(stop(disconnected: true)),
+      (reason) {
+        if (reason == 'notification_disconnect' || !ref.read(pairingConnectionProvider).isConnected) {
+          _runUnawaited('native_disconnect_failed', () => stop(disconnected: true));
+        } else {
+          _log('native_network_change', 'Native network changed; waiting for authenticated heartbeat timeout');
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        _log('native_disconnect_listener_failed', 'Native disconnect listener failed: ${_safePairingError(error)}');
+      },
     );
   }
 
@@ -1227,6 +1336,9 @@ class PairingController extends Notifier<PairingState> {
       ..addEntries(
         ref.read(pairingConnectionProvider).peers.map((peer) => MapEntry(peer.fingerprint, DateTime.now())),
       );
+    _missedHeartbeats
+      ..clear()
+      ..addEntries(ref.read(pairingConnectionProvider).peers.map((peer) => MapEntry(peer.fingerprint, 0)));
     socket.listen(
       (event) {
         if (event != RawSocketEvent.read || !identical(_peerSocket, socket)) return;
@@ -1239,19 +1351,19 @@ class PairingController extends Notifier<PairingState> {
         if (!identical(_peerSocket, socket)) return;
         _log(
           'heartbeat_socket_failed',
-          'Pairing heartbeat socket failed: $error',
+          'Pairing heartbeat socket failed: ${_safePairingError(error)}',
         );
-        unawaited(_disconnectFromPeer());
       },
       onDone: () {
-        if (identical(_peerSocket, socket)) unawaited(_disconnectFromPeer());
+        if (identical(_peerSocket, socket)) _log('heartbeat_socket_closed', 'Pairing heartbeat socket closed; waiting for peer timeout');
       },
       cancelOnError: false,
     );
     _peerHeartbeatTimer = Timer.periodic(
-      const Duration(seconds: 1),
+      const Duration(seconds: 15),
       (_) => _sendPeerHeartbeats(),
     );
+    _sendPeerHeartbeats();
     _log('heartbeat_started', 'Authenticated pairing heartbeat started');
   }
 
@@ -1260,14 +1372,14 @@ class PairingController extends Notifier<PairingState> {
     final token = _peerSessionToken;
     final connection = ref.read(pairingConnectionProvider);
     if (socket == null || token == null || connection.sessionToken != token || connection.peers.isEmpty) return;
-    final now = DateTime.now();
     for (final peer in connection.peers) {
-      final lastSeen = _peerLastSeen[peer.fingerprint] ?? now;
-      if (now.difference(lastSeen) >= const Duration(seconds: 5)) {
+      final misses = _missedHeartbeats[peer.fingerprint] ?? 0;
+      if (misses >= 3) {
         _log('peer_timeout', 'Pairing peer heartbeat timed out');
-        unawaited(_disconnectFromPeer());
+        _runUnawaited('peer_disconnect_failed', _disconnectFromPeer);
         return;
       }
+      _missedHeartbeats[peer.fingerprint] = misses + 1;
       final address = InternetAddress.tryParse(peer.ip);
       if (address == null) {
         _log('heartbeat_send_failed', 'Pairing peer has an invalid IP address');
@@ -1314,6 +1426,7 @@ class PairingController extends Notifier<PairingState> {
       return;
     }
     _peerLastSeen[peer.fingerprint] = DateTime.now();
+    _missedHeartbeats[peer.fingerprint] = 0;
     switch (messageType) {
       case 'heartbeat':
         _sendPeerDatagram(socket, datagram.address, datagram.port, {
@@ -1326,7 +1439,7 @@ class PairingController extends Notifier<PairingState> {
         break;
       case 'disconnect':
         _log('peer_disconnected', 'Pairing peer requested disconnect');
-        unawaited(_disconnectFromPeer());
+        _runUnawaited('peer_disconnect_failed', _disconnectFromPeer);
     }
   }
 
@@ -1367,6 +1480,7 @@ class PairingController extends Notifier<PairingState> {
     _peerSessionToken = null;
     _localFingerprint = null;
     _peerLastSeen.clear();
+    _missedHeartbeats.clear();
     socket?.close();
   }
 

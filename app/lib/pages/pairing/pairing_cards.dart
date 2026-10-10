@@ -11,7 +11,9 @@ import 'package:localsend_app/provider/network/server/server_provider.dart';
 import 'package:localsend_app/provider/pairing/pairing_controller.dart';
 import 'package:localsend_app/provider/persistence_provider.dart';
 import 'package:localsend_app/provider/settings_provider.dart';
+import 'package:localsend_app/util/native/channel/android_channel.dart' as android_channel;
 import 'package:localsend_app/util/device_type_ext.dart';
+import 'package:localsend_app/util/native/platform_check.dart';
 import 'package:localsend_app/util/qr_payload_parser.dart';
 import 'package:localsend_app/widget/glass/glass_card.dart';
 import 'package:localsend_isolates/rust/api/pairing.dart';
@@ -410,12 +412,11 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
 
     if (!busyAlreadySet) setState(() => _busy = true);
     try {
-      if (current.sessionToken != null) await controller.stop();
       await controller.startSender(
         PairingOptions(
           mode: mode,
           multiRecipient: _multiRecipient,
-          pinEnabled: mode == PairingMode.sameNetwork && _pinEnabled,
+          pinEnabled: _pinEnabled,
           pin: _pinEnabled ? _pin : null,
           encrypted: _encrypted,
         ),
@@ -434,7 +435,7 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
       if (ref.read(pairingControllerProvider).failureReason == null) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text(error.toString())));
+        ).showSnackBar(SnackBar(content: Text(friendlyPairingError(error))));
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -448,7 +449,7 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
   }
 
   Future<void> _changeOption({bool? multiRecipient, bool? encrypted}) async {
-    if (_busy) return;
+    if (_busy || ref.read(pairingConnectionProvider).isConnected) return;
     setState(() {
       _busy = true;
       if (multiRecipient != null) _multiRecipient = multiRecipient;
@@ -465,13 +466,13 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
         setState(() => _busy = false);
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text(error.toString())));
+        ).showSnackBar(SnackBar(content: Text(friendlyPairingError(error))));
       }
     }
   }
 
   Future<void> _setPinProtection(bool enabled) async {
-    if (_busy) return;
+    if (_busy || ref.read(pairingConnectionProvider).isConnected) return;
     if (!enabled) {
       setState(() {
         _pinEnabled = false;
@@ -485,7 +486,7 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
           setState(() => _busy = false);
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(SnackBar(content: Text(error.toString())));
+          ).showSnackBar(SnackBar(content: Text(friendlyPairingError(error))));
         }
       }
       return;
@@ -507,7 +508,7 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
       await ref.read(persistenceProvider).setPairingPinProtectionEnabled(true);
       if (mounted)
         await _ensureSession(
-          PairingMode.sameNetwork,
+          _mode,
           restart: true,
           busyAlreadySet: true,
         );
@@ -516,19 +517,13 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
         setState(() => _busy = false);
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text(error.toString())));
+        ).showSnackBar(SnackBar(content: Text(friendlyPairingError(error))));
       }
     }
   }
 
   Future<void> _closeCard() async {
-    final state = ref.read(pairingControllerProvider);
-    final connected = ref.read(pairingConnectionProvider).isConnected;
-    final shouldStop = !connected && state.sessionToken != null && !state.multiRecipient;
     _dismissCard();
-    if (shouldStop) {
-      await ref.notifier(pairingControllerProvider).stop();
-    }
   }
 
   Future<void> _stop() async {
@@ -543,7 +538,7 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
     contentPadding: EdgeInsets.zero,
     title: const Text(PairingStrings.multiRecipients),
     value: _multiRecipient,
-    onChanged: _busy ? null : (value) => _changeOption(multiRecipient: value == true),
+    onChanged: _busy || ref.read(pairingConnectionProvider).isConnected ? null : (value) => _changeOption(multiRecipient: value == true),
   );
 
   Widget _encryptionOption() => CheckboxListTile(
@@ -551,7 +546,7 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
     contentPadding: EdgeInsets.zero,
     title: const Text(PairingStrings.encryptedTransfer),
     value: _encrypted,
-    onChanged: _busy ? null : (value) => _changeOption(encrypted: value == true),
+    onChanged: _busy || ref.read(pairingConnectionProvider).isConnected ? null : (value) => _changeOption(encrypted: value == true),
   );
 
   @override
@@ -629,15 +624,12 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
                         child: _busy || state.phase == PairingPhase.startingHotspot
                             ? const CircularProgressIndicator()
                             : Text(
-                                state.failureReason ?? PairingStrings.startQr,
+                                state.failureReason == PairingStrings.hotspotIncompatibleMode ? '' : state.failureReason ?? PairingStrings.startQr,
                                 style: state.phase == PairingPhase.failed ? TextStyle(color: colors.error) : null,
                               ),
                       ),
                     ),
-                  if (state.failureReason?.contains(
-                        'HOTSPOT_INCOMPATIBLE_MODE',
-                      ) ==
-                      true) ...[
+                  if (state.failureReason == PairingStrings.hotspotIncompatibleMode) ...[
                     Padding(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 12,
@@ -654,6 +646,12 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
                       label: const Text(PairingStrings.wifiDirect),
                     ),
                   ],
+                  if (state.locationSettingsRequired && checkPlatform([TargetPlatform.android]))
+                    OutlinedButton.icon(
+                      onPressed: android_channel.openLocationSettingsAndroid,
+                      icon: const Icon(Icons.location_on_outlined),
+                      label: const Text(PairingStrings.locationSettings),
+                    ),
                   if (state.qrPayload != null) ...[
                     const SizedBox(height: 8),
                     const Text(
@@ -678,6 +676,20 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
                       onChanged: null,
                     ),
                   _multiRecipientOption(),
+                  CheckboxListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(PairingStrings.pinProtection),
+                    value: _pinEnabled,
+                    onChanged: _busy || ref.read(pairingConnectionProvider).isConnected ? null : (value) => _setPinProtection(value == true),
+                  ),
+                  if (_pinEnabled && state.sessionToken != null)
+                    ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text(PairingStrings.senderPinLabel),
+                      subtitle: SelectableText(_pin),
+                    ),
                   _encryptionOption(),
                   if (state.phase == PairingPhase.closedForSelection)
                     Text(
@@ -699,13 +711,6 @@ class _SendPairingCardState extends State<_SendPairingCard> with Refena {
                     _Countdown(seconds: _secondsLeft),
                   ],
                   _multiRecipientOption(),
-                  CheckboxListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text(PairingStrings.pinProtection),
-                    value: _pinEnabled,
-                    onChanged: _busy ? null : (value) => _setPinProtection(value == true),
-                  ),
                   _encryptionOption(),
                   if (_pinEnabled)
                     ListTile(
@@ -812,7 +817,7 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
       setState(() => _encrypted = previous);
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(error.toString())));
+      ).showSnackBar(SnackBar(content: Text(friendlyPairingError(error))));
     } finally {
       if (mounted) setState(() => _encryptionBusy = false);
     }
@@ -890,16 +895,7 @@ class _ReceivePairingCardState extends State<_ReceivePairingCard> with Refena {
   }
 
   Future<void> _close() async {
-    final state = ref.read(pairingControllerProvider);
-    final connected = ref.read(pairingConnectionProvider).isConnected;
-    final shouldStop =
-        !connected &&
-        ((state.role == PairingRole.sender && state.sessionToken != null && !state.multiRecipient) ||
-            (state.role == PairingRole.receiver && state.phase != PairingPhase.idle));
     _dismiss();
-    if (shouldStop) {
-      await ref.notifier(pairingControllerProvider).stop();
-    }
   }
 
   Future<void> _stop() async {
@@ -1237,7 +1233,9 @@ class _QrScannerViewState extends State<_QrScannerView> with SingleTickerProvide
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        error.errorCode == MobileScannerErrorCode.permissionDenied ? PairingStrings.cameraPermissionDenied : error.toString(),
+                        error.errorCode == MobileScannerErrorCode.permissionDenied
+                            ? PairingStrings.cameraPermissionDenied
+                            : PairingStrings.cameraUnavailable,
                         textAlign: TextAlign.center,
                       ),
                       if (error.errorCode == MobileScannerErrorCode.permissionDenied)

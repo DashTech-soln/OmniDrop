@@ -29,6 +29,15 @@ abstract final class PairingStrings {
   static const hotspotConnectionFailed = 'Could not connect automatically. Connect to the network manually.';
   static const hotspotIncompatibleMode =
       'Turn off your phone’s existing hotspot first, or use the Wi-Fi Direct tab while both phones are on the same network.';
+  static const locationServicesRequired = 'Turn on Location services to start QR pairing.';
+  static const hotspotPermissionRequired = 'Allow the requested permission to start QR pairing.';
+  static const hotspotStartFailed = 'Could not start the pairing hotspot. Check Wi-Fi and try again.';
+  static const hotspotConnectionDenied = 'The Wi-Fi connection request was cancelled. Connect manually and continue.';
+  static const wifiCouldNotBeEnabled = 'Turn on Wi-Fi to continue pairing.';
+  static const operationFailed = 'Pairing could not be completed. Please try again.';
+  static const connectionUnstable = 'The connection is temporarily unavailable. Retrying…';
+  static const locationSettings = 'Location settings';
+  static const pairingActive = 'Pairing active';
   static const encryptionChangeUnavailable = 'Encryption cannot be changed while a pairing or transfer session is active.';
   static const sessionExpired = 'The sender session is no longer active.';
   static const startQr = 'Start QR pairing';
@@ -76,7 +85,7 @@ abstract final class PairingStrings {
   static const cameraPermissionHint = 'Allow camera access in system settings, then retry.';
   static const manualWifiHint = 'Connect to the sender network manually, then continue.';
   static const secureReceiveHint = 'Use HTTPS for this device’s receive server.';
-  static const optionRestartHint = 'Changing pairing options restarts this session.';
+  static const optionRestartHint = 'Changing options creates a fresh pairing code.';
   static const senderPinLabel = 'Pairing PIN';
   static const save = 'Save';
   static const cancel = 'Cancel';

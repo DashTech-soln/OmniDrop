@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.BroadcastReceiver
 import android.content.IntentFilter
+import android.location.LocationManager
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
@@ -65,6 +66,35 @@ private const val PERMISSION_POST_NOTIFICATIONS = "android.permission.POST_NOTIF
 private const val API_LEVEL_ANDROID_17 = 37
 private const val NATIVE_CRASH_FILE = "last_native_crash.txt"
 
+private class OnceMethodResult(
+    private val context: Context,
+    private val delegate: MethodChannel.Result,
+) : MethodChannel.Result {
+    private var answered = false
+
+    @Synchronized
+    private fun reply(step: String, action: () -> Unit) {
+        if (answered) {
+            PairingNativeLog.append(context, "method_channel_duplicate_reply", step)
+            return
+        }
+
+        answered = true
+        try {
+            action()
+        } catch (error: Throwable) {
+            PairingNativeLog.append(context, "method_channel_reply_failed", "$step: ${error.javaClass.simpleName}: ${error.message}")
+        }
+    }
+
+    override fun success(result: Any?) = reply("success") { delegate.success(result) }
+
+    override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) =
+        reply("error:$errorCode") { delegate.error(errorCode, errorMessage, errorDetails) }
+
+    override fun notImplemented() = reply("notImplemented") { delegate.notImplemented() }
+}
+
 private object PairingNativeCrashReport {
     @Volatile
     private var installed = false
@@ -108,35 +138,56 @@ class MainActivity : FlutterActivity() {
     private var pendingWifiHotspotSsid: String? = null
     private var pendingWifiHotspotPassword: String? = null
     private var wifiHotspotNetworkCallback: ConnectivityManager.NetworkCallback? = null
+    private var wifiHotspotNetworkCallbackRegistered = false
     private var wifiHotspotTimeout: Runnable? = null
     private var legacyWifiNetworkId: Int? = null
     private var hotspotReceiverRegistered = false
     private var pairingChannel: MethodChannel? = null
     private val hotspotResultReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == PairingForegroundService.ACTION_PAIRING_DISCONNECTED) {
-                pairingChannel?.invokeMethod("pairingDisconnected", null)
-                return
+            try {
+                if (intent.action == PairingForegroundService.ACTION_PAIRING_DISCONNECTED) {
+                    pairingChannel?.invokeMethod("pairingDisconnected", intent.getStringExtra(PairingForegroundService.EXTRA_STOP_REASON))
+                    return
+                }
+
+                val result = pendingHotspotResult ?: return
+                pendingHotspotResult = null
+                if (intent.getBooleanExtra("success", false)) {
+                    result.success(
+                        mapOf(
+                            "ssid" to intent.getStringExtra("ssid"),
+                            "password" to intent.getStringExtra("password"),
+                            "supports5GHz" to intent.getBooleanExtra("supports5GHz", false),
+                            "canRequest5GHz" to intent.getBooleanExtra("canRequest5GHz", false),
+                            "hostIp" to intent.getStringExtra("hostIp"),
+                        ),
+                    )
+                } else {
+                    result.error(
+                        intent.getStringExtra("code") ?: "HOTSPOT_START_FAILED",
+                        intent.getStringExtra("message") ?: "Android could not start the local-only hotspot.",
+                        null,
+                    )
+                }
+            } catch (error: Throwable) {
+                PairingNativeLog.append(context, "hotspot_result_receiver", "${error.javaClass.simpleName}: ${error.message}")
             }
-            val result = pendingHotspotResult ?: return
-            pendingHotspotResult = null
-            if (intent.getBooleanExtra("success", false)) {
-                result.success(
-                    mapOf(
-                        "ssid" to intent.getStringExtra("ssid"),
-                        "password" to intent.getStringExtra("password"),
-                        "supports5GHz" to intent.getBooleanExtra("supports5GHz", false),
-                        "canRequest5GHz" to intent.getBooleanExtra("canRequest5GHz", false),
-                        "hostIp" to intent.getStringExtra("hostIp"),
-                    ),
-                )
+        }
+    }
+
+    private fun isLocationServicesEnabled(): Boolean {
+        val locationManager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return false
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                locationManager.isLocationEnabled
             } else {
-                result.error(
-                    intent.getStringExtra("code") ?: "HOTSPOT_START_FAILED",
-                    intent.getStringExtra("message") ?: "Android could not start the local-only hotspot.",
-                    null,
-                )
+                locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                    locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
             }
+        } catch (error: Throwable) {
+            PairingNativeLog.append(this, "location_services_check", "${error.javaClass.simpleName}: ${error.message}")
+            false
         }
     }
 
@@ -147,8 +198,15 @@ class MainActivity : FlutterActivity() {
             "isFinishing=$isFinishing; isChangingConfigurations=$isChangingConfigurations",
         )
         if (hotspotReceiverRegistered) {
-            unregisterReceiver(hotspotResultReceiver)
+            try {
+                unregisterReceiver(hotspotResultReceiver)
+            } catch (error: Throwable) {
+                PairingNativeLog.append(applicationContext, "receiver_unregister", "${error.javaClass.simpleName}: ${error.message}")
+            }
             hotspotReceiverRegistered = false
+        }
+        if (isFinishing && !getSharedPreferences("native_pairing", MODE_PRIVATE).getBoolean("service_active", false)) {
+            PairingNativeLog.clearProcessMarker(applicationContext)
         }
         pairingChannel = null
         mediaQueryExecutor.shutdown()
@@ -157,8 +215,12 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        PairingNativeCrashReport.install(applicationContext)
-        PairingNativeLog.recoverProcessTermination(this)
+        try {
+            PairingNativeCrashReport.install(applicationContext)
+            PairingNativeLog.recoverProcessTermination(this)
+        } catch (error: Throwable) {
+            PairingNativeLog.append(applicationContext, "process_marker", "${error.javaClass.simpleName}: ${error.message}")
+        }
     }
 
     /// share_handler drops share intents arriving via onNewIntent while the Dart side
@@ -215,8 +277,10 @@ class MainActivity : FlutterActivity() {
             CHANNEL
         )
         pairingChannel = channel
-        channel.setMethodCallHandler { call, result ->
-            when (call.method) {
+        channel.setMethodCallHandler { call, rawResult ->
+            val result = OnceMethodResult(applicationContext, rawResult)
+            try {
+                when (call.method) {
                 "pickDirectory" -> {
                     pendingResult = result
                     openDirectoryPicker(onlyPath = false)
@@ -330,6 +394,11 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
 
+                "openLocationSettings" -> {
+                    startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                    result.success(null)
+                }
+
                 "enableWifi" -> enableWifi(result)
 
                 "is5GHzBandSupported" -> {
@@ -412,10 +481,12 @@ class MainActivity : FlutterActivity() {
                         try {
                             val files = queryMediaFiles(category, offset, limit)
                             runOnUiThread { result.success(files) }
-                        } catch (e: SecurityException) {
-                            runOnUiThread { result.error("PERMISSION_DENIED", e.message ?: "Media access was denied", null) }
-                        } catch (e: Exception) {
-                            runOnUiThread { result.error("QUERY_FAILED", e.message ?: "Could not query media files", null) }
+                        } catch (error: Throwable) {
+                            PairingNativeLog.append(this, "media_query_callback", "${error.javaClass.simpleName}: ${error.message}")
+                            runOnUiThread {
+                                if (error is SecurityException) result.error("PERMISSION_DENIED", "Media access was denied.", null)
+                                else result.error("QUERY_FAILED", "Could not query media files.", null)
+                            }
                         }
                     }
 
@@ -427,8 +498,13 @@ class MainActivity : FlutterActivity() {
                     if (uri == null || category == null) result.error("INVALID_ARGUMENT", "Missing URI or category", null)
                     else {
                         mediaQueryExecutor.execute {
-                            val thumbnail = loadMediaThumbnail(Uri.parse(uri), category)
-                            runOnUiThread { result.success(thumbnail) }
+                            try {
+                                val thumbnail = loadMediaThumbnail(Uri.parse(uri), category)
+                                runOnUiThread { result.success(thumbnail) }
+                            } catch (error: Throwable) {
+                                PairingNativeLog.append(this, "media_thumbnail_callback", "${error.javaClass.simpleName}: ${error.message}")
+                                runOnUiThread { result.error("THUMBNAIL_FAILED", "Could not load this media preview.", null) }
+                            }
                         }
                     }
                 }
@@ -442,7 +518,11 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
-                else -> result.notImplemented()
+                    else -> result.notImplemented()
+                }
+            } catch (error: Throwable) {
+                PairingNativeLog.append(applicationContext, "method_channel_failure", "${call.method}: ${error.javaClass.simpleName}: ${error.message}")
+                result.error("NATIVE_OPERATION_FAILED", "Android could not complete this operation.", null)
             }
         }
     }
@@ -473,6 +553,10 @@ class MainActivity : FlutterActivity() {
         if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
             pendingHotspotResult = result
             requestPermissions(arrayOf(permission), REQUEST_CODE_LOCAL_ONLY_HOTSPOT)
+            return
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU && !isLocationServicesEnabled()) {
+            result.error("HOTSPOT_LOCATION_DISABLED", "Location services must be enabled to start a local-only hotspot.", null)
             return
         }
 
@@ -578,40 +662,54 @@ class MainActivity : FlutterActivity() {
                     .build()
                 val callback = object : ConnectivityManager.NetworkCallback() {
                     override fun onAvailable(network: Network) {
-                        if (pendingWifiHotspotResult !== result) return
-                        PairingNativeLog.append(this@MainActivity, "network_request_result", "available")
-                        if (bindWifiProcessToNetwork(connectivityManager, network)) {
-                            PairingNativeLog.append(this@MainActivity, "bind_result", "success")
-                            wifiHotspotNetworkCallback = this
-                            finishWifiConnect("success", "Connected to the QR hotspot.")
-                        } else {
-                            PairingNativeLog.append(this@MainActivity, "bind_result", "failed")
-                            finishWifiConnect("failed", "Android could not bind the app to the Wi-Fi hotspot.")
+                        try {
+                            val startingRequest = pendingWifiHotspotResult === result
+                            if (!startingRequest && !PairingForegroundService.isConnectionActive()) return
+                            PairingNativeLog.append(this@MainActivity, "network_request_result", "available")
+                            if (bindWifiProcessToNetwork(connectivityManager, network)) {
+                                PairingNativeLog.append(this@MainActivity, "bind_result", if (startingRequest) "success" else "reconnected")
+                                wifiHotspotNetworkCallback = this
+                                if (startingRequest) finishWifiConnect("success", "Connected to the QR hotspot.")
+                            } else {
+                                PairingNativeLog.append(this@MainActivity, "bind_result", "failed")
+                                if (startingRequest) finishWifiConnect("failed", "Android could not bind the app to the Wi-Fi hotspot.")
+                            }
+                        } catch (error: Throwable) {
+                            PairingNativeLog.append(this@MainActivity, "network_callback", "onAvailable: ${error.javaClass.simpleName}: ${error.message}")
+                            finishWifiConnect("failed", "Android could not connect to the sender Wi-Fi.")
                         }
                     }
 
                     override fun onLost(network: Network) {
-                        unbindIfLostNetwork(connectivityManager, network)
+                        try {
+                            unbindIfLostNetwork(connectivityManager, network)
+                        } catch (error: Throwable) {
+                            PairingNativeLog.append(this@MainActivity, "network_callback", "onLost: ${error.javaClass.simpleName}: ${error.message}")
+                        }
                     }
 
                     override fun onUnavailable() {
-                        if (pendingWifiHotspotResult === result) {
-                            PairingNativeLog.append(this@MainActivity, "network_request_result", "unavailable")
-                            finishWifiConnect("user_denied", "The Wi-Fi connection request was declined or unavailable.")
+                        try {
+                            if (pendingWifiHotspotResult === result) {
+                                PairingNativeLog.append(this@MainActivity, "network_request_result", "unavailable")
+                                finishWifiConnect("user_denied", "The Wi-Fi connection request was declined or unavailable.")
+                            }
+                        } catch (error: Throwable) {
+                            PairingNativeLog.append(this@MainActivity, "network_callback", "onUnavailable: ${error.javaClass.simpleName}: ${error.message}")
+                            finishWifiConnect("failed", "Android could not connect to the sender Wi-Fi.")
                         }
                     }
                 }
                 wifiHotspotNetworkCallback = callback
                 connectivityManager.requestNetwork(request, callback)
+                wifiHotspotNetworkCallbackRegistered = true
             } else {
                 connectLegacyWifiHotspot(ssid, password, connectivityManager, result)
             }
-        } catch (error: SecurityException) {
-            PairingNativeLog.append(this, "network_request_result", "permission_denied")
-            finishWifiConnect("user_denied", error.message ?: "Android denied permission to connect to Wi-Fi.")
-        } catch (error: RuntimeException) {
-            PairingNativeLog.append(this, "network_request_result", "failed")
-            finishWifiConnect("failed", error.message ?: "Android could not request the Wi-Fi network.")
+        } catch (error: Throwable) {
+            wifiHotspotNetworkCallbackRegistered = false
+            PairingNativeLog.append(this, "network_request_result", "${error.javaClass.simpleName}: ${error.message}")
+            finishWifiConnect(if (error is SecurityException) "user_denied" else "failed", "Android could not request the Wi-Fi connection.")
         }
     }
 
@@ -625,6 +723,10 @@ class MainActivity : FlutterActivity() {
         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         if (wifiManager == null) {
             finishWifiConnect("unsupported", "Wi-Fi is unavailable on this device.")
+            return
+        }
+        if (!wifiManager.isWifiEnabled) {
+            finishWifiConnect("wifi_disabled", "Turn on Wi-Fi to connect to the sender hotspot.")
             return
         }
         val quotedSsid = "\"$ssid\""
@@ -645,26 +747,37 @@ class MainActivity : FlutterActivity() {
         legacyWifiNetworkId = networkId
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                if (pendingWifiHotspotResult !== result) return
-                val connectedSsid = wifiManager.connectionInfo?.ssid?.removeSurrounding("\"")
-                if (connectedSsid != ssid) return
-                PairingNativeLog.append(this@MainActivity, "network_request_result", "available")
-                if (bindWifiProcessToNetwork(connectivityManager, network)) {
-                    PairingNativeLog.append(this@MainActivity, "bind_result", "success")
-                    wifiHotspotNetworkCallback = this
-                    finishWifiConnect("success", "Connected to the QR hotspot.")
-                } else {
-                    PairingNativeLog.append(this@MainActivity, "bind_result", "failed")
-                    finishWifiConnect("failed", "Android could not bind the app to the Wi-Fi hotspot.")
+                try {
+            val startingRequest = pendingWifiHotspotResult === result
+            if (!startingRequest && !PairingForegroundService.isConnectionActive()) return
+            val connectedSsid = wifiManager.connectionInfo?.ssid?.removeSurrounding("\"")
+            if (connectedSsid != ssid) return
+            PairingNativeLog.append(this@MainActivity, "network_request_result", "available")
+            if (bindWifiProcessToNetwork(connectivityManager, network)) {
+                PairingNativeLog.append(this@MainActivity, "bind_result", if (startingRequest) "success" else "reconnected")
+                wifiHotspotNetworkCallback = this
+                if (startingRequest) finishWifiConnect("success", "Connected to the QR hotspot.")
+            } else {
+                PairingNativeLog.append(this@MainActivity, "bind_result", "failed")
+                if (startingRequest) finishWifiConnect("failed", "Android could not bind the app to the Wi-Fi hotspot.")
+                    }
+                } catch (error: Throwable) {
+                    PairingNativeLog.append(this@MainActivity, "network_callback", "legacy onAvailable: ${error.javaClass.simpleName}: ${error.message}")
+                    finishWifiConnect("failed", "Android could not connect to the sender Wi-Fi.")
                 }
             }
 
             override fun onLost(network: Network) {
-                unbindIfLostNetwork(connectivityManager, network)
+                try {
+                    unbindIfLostNetwork(connectivityManager, network)
+                } catch (error: Throwable) {
+                    PairingNativeLog.append(this@MainActivity, "network_callback", "legacy onLost: ${error.javaClass.simpleName}: ${error.message}")
+                }
             }
         }
         wifiHotspotNetworkCallback = callback
         connectivityManager.registerDefaultNetworkCallback(callback)
+        wifiHotspotNetworkCallbackRegistered = true
         if (!wifiManager.enableNetwork(networkId, true) || !wifiManager.reconnect()) {
             PairingNativeLog.append(this, "network_request_result", "failed")
             finishWifiConnect("failed", "Android could not enable the QR hotspot configuration.")
@@ -695,6 +808,13 @@ class MainActivity : FlutterActivity() {
                 resultMessage = "$message $cleanupError"
             }
         }
+        if (resultCode == "success") {
+            wifiHotspotNetworkCallback?.let { callback ->
+                getSystemService(ConnectivityManager::class.java)?.let { manager ->
+                    PairingForegroundService.retainNetworkRequest(applicationContext, manager, callback)
+                }
+            }
+        }
         result.success(mapOf("code" to resultCode, "message" to resultMessage))
     }
 
@@ -703,7 +823,11 @@ class MainActivity : FlutterActivity() {
             if (connectivityManager.boundNetworkForProcess == network) {
                 if (connectivityManager.bindProcessToNetwork(null)) {
                     PairingNativeLog.append(this, "teardown_reason", "receiver_network_lost")
-                    sendBroadcast(Intent(PairingForegroundService.ACTION_PAIRING_DISCONNECTED).setPackage(packageName))
+                    sendBroadcast(
+                        Intent(PairingForegroundService.ACTION_PAIRING_DISCONNECTED)
+                            .setPackage(packageName)
+                            .putExtra(PairingForegroundService.EXTRA_STOP_REASON, "receiver_network_lost"),
+                    )
                 } else {
                     PairingNativeLog.append(this, "bind_result", "unbind_failed")
                 }
@@ -771,12 +895,17 @@ class MainActivity : FlutterActivity() {
     private fun unregisterWifiCallback() {
         val connectivityManager = getSystemService(ConnectivityManager::class.java)
         wifiHotspotNetworkCallback?.let { callback ->
-            try {
-                connectivityManager?.unregisterNetworkCallback(callback)
-            } catch (_: IllegalArgumentException) {
+            val retainedByService = PairingForegroundService.releaseNetworkRequest()
+            if (!retainedByService && wifiHotspotNetworkCallbackRegistered) {
+                try {
+                    connectivityManager?.unregisterNetworkCallback(callback)
+                } catch (error: Throwable) {
+                    PairingNativeLog.append(this, "network_callback_unregister", "${error.javaClass.simpleName}: ${error.message}")
+                }
             }
         }
         wifiHotspotNetworkCallback = null
+        wifiHotspotNetworkCallbackRegistered = false
         wifiHotspotTimeout?.let { Handler(Looper.getMainLooper()).removeCallbacks(it) }
         wifiHotspotTimeout = null
     }
@@ -842,40 +971,50 @@ class MainActivity : FlutterActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_CODE_LOCAL_NETWORK) {
-            pendingPermissionResult?.success(grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)
-            pendingPermissionResult = null
-        } else if (requestCode == REQUEST_CODE_LOCAL_ONLY_HOTSPOT) {
-            val result = pendingHotspotResult
-            pendingHotspotResult = null
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED && result != null) {
-                startLocalOnlyHotspot(prefer5GHz = false, result = result)
-            } else {
-                PairingNativeLog.append(this, "hotspot_start_result", "permission_denied")
-                result?.error("HOTSPOT_PERMISSION_DENIED", "Permission to start a local-only hotspot was denied.", null)
-            }
-        } else if (requestCode == REQUEST_CODE_WIFI_HOTSPOT) {
-            val result = pendingWifiHotspotResult
-            val ssid = pendingWifiHotspotSsid
-            val password = pendingWifiHotspotPassword
-            pendingWifiHotspotResult = null
-            pendingWifiHotspotSsid = null
-            pendingWifiHotspotPassword = null
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED && result != null && ssid != null && password != null) {
-                connectToWifiHotspot(ssid = ssid, password = password, result = result)
-            } else {
-                PairingNativeLog.append(this, "network_request_result", "permission_denied")
-                result?.success(mapOf("code" to "user_denied", "message" to "Wi-Fi permission was denied."))
-            }
-        } else if (requestCode == REQUEST_CODE_PAIRING_NOTIFICATIONS) {
-            val result = pendingHotspotResult
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED && result != null) {
-                startPairingServiceCommand(PairingForegroundService.ACTION_START)
-            } else {
+        try {
+            if (requestCode == REQUEST_CODE_LOCAL_NETWORK) {
+                pendingPermissionResult?.success(grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)
+                pendingPermissionResult = null
+            } else if (requestCode == REQUEST_CODE_LOCAL_ONLY_HOTSPOT) {
+                val result = pendingHotspotResult
                 pendingHotspotResult = null
-                PairingNativeLog.append(this, "hotspot_start_result", "notification_permission_denied")
-                result?.error("HOTSPOT_NOTIFICATION_PERMISSION_DENIED", "Allow notifications to keep the pairing hotspot active.", null)
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED && result != null) {
+                    startLocalOnlyHotspot(prefer5GHz = false, result = result)
+                } else {
+                    PairingNativeLog.append(this, "hotspot_start_result", "permission_denied")
+                    result?.error("HOTSPOT_PERMISSION_DENIED", "Permission to start a local-only hotspot was denied.", null)
+                }
+            } else if (requestCode == REQUEST_CODE_WIFI_HOTSPOT) {
+                val result = pendingWifiHotspotResult
+                val ssid = pendingWifiHotspotSsid
+                val password = pendingWifiHotspotPassword
+                pendingWifiHotspotResult = null
+                pendingWifiHotspotSsid = null
+                pendingWifiHotspotPassword = null
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED && result != null && ssid != null && password != null) {
+                    connectToWifiHotspot(ssid = ssid, password = password, result = result)
+                } else {
+                    PairingNativeLog.append(this, "network_request_result", "permission_denied")
+                    result?.success(mapOf("code" to "user_denied", "message" to "Wi-Fi permission was denied."))
+                }
+            } else if (requestCode == REQUEST_CODE_PAIRING_NOTIFICATIONS) {
+                val result = pendingHotspotResult
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED && result != null) {
+                    startPairingServiceCommand(PairingForegroundService.ACTION_START)
+                } else {
+                    pendingHotspotResult = null
+                    PairingNativeLog.append(this, "hotspot_start_result", "notification_permission_denied")
+                    result?.error("HOTSPOT_NOTIFICATION_PERMISSION_DENIED", "Allow notifications to keep the pairing hotspot active.", null)
+                }
             }
+        } catch (error: Throwable) {
+            PairingNativeLog.append(this, "permission_callback", "${error.javaClass.simpleName}: ${error.message}")
+            pendingPermissionResult?.error("PERMISSION_REQUEST_FAILED", "Android could not complete the permission request.", null)
+            pendingPermissionResult = null
+            pendingHotspotResult?.error("HOTSPOT_PERMISSION_DENIED", "Android could not complete the hotspot permission request.", null)
+            pendingHotspotResult = null
+            pendingWifiHotspotResult?.success(mapOf("code" to "failed", "message" to "Android could not complete the Wi-Fi permission request."))
+            pendingWifiHotspotResult = null
         }
     }
 

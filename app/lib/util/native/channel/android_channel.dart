@@ -9,18 +9,21 @@ part 'android_channel.mapper.dart';
 
 const _methodChannel = MethodChannel('com.omnidrop.app/localsend');
 final _logger = Logger('AndroidSaf');
-final _pairingDisconnectEvents = StreamController<void>.broadcast(sync: true);
+final _pairingDisconnectEvents = StreamController<String?>.broadcast(sync: true);
 bool _pairingDisconnectHandlerInstalled = false;
 
-Stream<void> get pairingDisconnectEvents {
+Stream<String?> get pairingDisconnectEvents {
   if (!_pairingDisconnectHandlerInstalled) {
     _methodChannel.setMethodCallHandler((call) async {
-      if (call.method != 'pairingDisconnected') {
-        throw MissingPluginException(
-          'Unknown native pairing callback: ${call.method}',
-        );
+      try {
+        if (call.method != 'pairingDisconnected') {
+          _logger.warning('Unknown native pairing callback: ${call.method}');
+          return;
+        }
+        _pairingDisconnectEvents.add(call.arguments is String ? call.arguments as String : null);
+      } catch (error, stackTrace) {
+        _logger.severe('Could not handle native pairing callback', error, stackTrace);
       }
-      _pairingDisconnectEvents.add(null);
     });
     _pairingDisconnectHandlerInstalled = true;
   }
@@ -192,6 +195,10 @@ Future<void> shareTextInviteAndroid() async {
 
 Future<void> openWifiSettingsAndroid() async {
   await _methodChannel.invokeMethod<void>('openWifiSettings');
+}
+
+Future<void> openLocationSettingsAndroid() async {
+  await _methodChannel.invokeMethod<void>('openLocationSettings');
 }
 
 Future<AndroidLocalOnlyHotspot> startLocalOnlyHotspotAndroid({

@@ -101,7 +101,7 @@ class _SenderPairingTabState extends State<_SenderPairingTab> with Refena {
             ),
           );
     } catch (error) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.toString())));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(friendlyPairingError(error))));
     }
   }
 
@@ -134,7 +134,7 @@ class _SenderPairingTabState extends State<_SenderPairingTab> with Refena {
         ),
       );
     } catch (error) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.toString())));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(friendlyPairingError(error))));
     } finally {
       controller.setTransferring(false);
       if (mounted) setState(() => _sending = false);
@@ -258,6 +258,12 @@ class _SenderPairingTabState extends State<_SenderPairingTab> with Refena {
           Padding(
             padding: const EdgeInsets.only(top: 12),
             child: Text(state.failureReason!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+          ),
+        if (state.locationSettingsRequired && checkPlatform([TargetPlatform.android]))
+          TextButton.icon(
+            onPressed: android_channel.openLocationSettingsAndroid,
+            icon: const Icon(Icons.location_on_outlined),
+            label: const Text(PairingStrings.locationSettings),
           ),
       ],
     );

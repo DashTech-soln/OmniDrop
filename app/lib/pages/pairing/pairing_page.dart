@@ -15,6 +15,7 @@ import 'package:localsend_app/provider/network/scan_facade.dart';
 import 'package:localsend_app/provider/network/send_provider.dart';
 import 'package:localsend_app/provider/network/server/server_provider.dart';
 import 'package:localsend_app/provider/persistence_provider.dart';
+import 'package:localsend_app/provider/pairing/pairing_controller.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
 import 'package:localsend_app/util/native/channel/android_channel.dart' as android_channel;
 import 'package:localsend_app/util/native/file_picker.dart';
@@ -178,7 +179,7 @@ class _SenderSessionTabState extends State<_SenderSessionTab> with Refena {
               if (event is HttpServerPairingEvent) serverService.forwardPairingEvent(event);
             },
             onError: (Object error) {
-              if (mounted) setState(() => _error = error.toString());
+              if (mounted) setState(() => _error = friendlyPairingError(error));
             },
           );
       await _refreshSnapshot();
@@ -197,7 +198,7 @@ class _SenderSessionTabState extends State<_SenderSessionTab> with Refena {
         }
       });
     } catch (error) {
-      if (mounted) setState(() => _error = error.toString());
+      if (mounted) setState(() => _error = friendlyPairingError(error));
       await _releaseResources();
     } finally {
       if (mounted) setState(() => _starting = false);
@@ -298,7 +299,7 @@ class _SenderSessionTabState extends State<_SenderSessionTab> with Refena {
         ),
       );
     } catch (error) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.toString())));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(friendlyPairingError(error))));
     } finally {
       if (mounted) setState(() => _sending = false);
     }
@@ -555,7 +556,7 @@ class _QrReceiverTabState extends State<_QrReceiverTab> with Refena {
       if (mounted) {
         setState(() {
           _state = _ReceiverState.failed;
-          _message = error.toString();
+          _message = friendlyPairingError(error);
         });
       }
     }
@@ -617,7 +618,9 @@ class _QrReceiverTabState extends State<_QrReceiverTab> with Refena {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          error.errorCode == MobileScannerErrorCode.permissionDenied ? PairingStrings.cameraPermissionDenied : error.toString(),
+                          error.errorCode == MobileScannerErrorCode.permissionDenied
+                              ? PairingStrings.cameraPermissionDenied
+                              : PairingStrings.cameraUnavailable,
                           textAlign: TextAlign.center,
                         ),
                         if (error.errorCode == MobileScannerErrorCode.permissionDenied)
@@ -677,7 +680,7 @@ class _QrReceiverTabState extends State<_QrReceiverTab> with Refena {
       try {
         await android_channel.disconnectFromWifiHotspotAndroid();
       } catch (error) {
-        disconnectError = error.toString();
+        disconnectError = friendlyPairingError(error);
       }
     }
     if (!mounted) return;
@@ -726,7 +729,7 @@ class _NearbyReceiverTabState extends State<_NearbyReceiverTab> with Refena {
       await Future.wait(devices.map(_queryOffer));
       if (mounted && _offers.isEmpty) setState(() => _error = PairingStrings.noOffer);
     } catch (error) {
-      if (mounted) setState(() => _error = error.toString());
+      if (mounted) setState(() => _error = friendlyPairingError(error));
     } finally {
       if (mounted) setState(() => _scanning = false);
     }
@@ -776,7 +779,7 @@ class _NearbyReceiverTabState extends State<_NearbyReceiverTab> with Refena {
       if (!response.success) throw StateError(PairingStrings.sessionExpired);
       if (mounted) setState(() => _joinedFingerprint = item.device.fingerprint);
     } catch (error) {
-      if (mounted) setState(() => _error = error.toString());
+      if (mounted) setState(() => _error = friendlyPairingError(error));
     } finally {
       if (mounted) setState(() => _joiningFingerprint = null);
     }

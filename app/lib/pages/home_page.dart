@@ -82,6 +82,7 @@ class _HomePageState extends State<HomePage> with Refena {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _transferTabKey = GlobalKey<_TransferTabState>();
   bool _dragAndDropIndicator = false;
+  bool _expiryNoticeShown = false;
 
   @override
   void initState() {
@@ -269,7 +270,17 @@ class _HomePageState extends State<HomePage> with Refena {
                     child: Consumer(
                       builder: (context, ref) {
                         final pairing = ref.watch(pairingControllerProvider);
-                        final showActivePairing = pairing.role == PairingRole.sender && pairing.sessionToken != null && pairing.multiRecipient;
+                        final showActivePairing = pairing.role == PairingRole.sender && pairing.sessionToken != null;
+                        if (pairing.phase == PairingPhase.stopped && pairing.failureReason == PairingStrings.sessionExpired && !_expiryNoticeShown) {
+                          _expiryNoticeShown = true;
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(PairingStrings.sessionExpired)));
+                            }
+                          });
+                        } else if (pairing.phase != PairingPhase.stopped) {
+                          _expiryNoticeShown = false;
+                        }
                         return GlassCard(
                           margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
                           padding: EdgeInsets.zero,
@@ -281,24 +292,28 @@ class _HomePageState extends State<HomePage> with Refena {
                               if (showActivePairing)
                                 Padding(
                                   padding: const EdgeInsets.fromLTRB(14, 8, 8, 4),
-                                  child: Row(
-                                    children: [
-                                      Icon(Icons.wifi_tethering, color: Theme.of(context).colorScheme.tertiary),
-                                      const SizedBox(width: 8),
-                                      Expanded(
-                                        child: Text(
-                                          '${PairingStrings.pairActive} - ${pairing.peers.length} ${PairingStrings.devicesCount}',
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: Theme.of(context).textTheme.labelMedium,
+                                  child: pairing.peers.isEmpty
+                                      ? _PendingPairingPill(
+                                          onTap: () => _transferTabKey.currentState?._openSendPairingCard(),
+                                        )
+                                      : Row(
+                                          children: [
+                                            Icon(Icons.wifi_tethering, color: Theme.of(context).colorScheme.tertiary),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                              child: Text(
+                                                '${PairingStrings.pairActive} - ${pairing.peers.length} ${PairingStrings.devicesCount}',
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: Theme.of(context).textTheme.labelMedium,
+                                              ),
+                                            ),
+                                            TextButton(
+                                              onPressed: () => ref.notifier(pairingControllerProvider).stop(),
+                                              child: const Text(PairingStrings.disconnect),
+                                            ),
+                                          ],
                                         ),
-                                      ),
-                                      TextButton(
-                                        onPressed: () => ref.notifier(pairingControllerProvider).stop(),
-                                        child: const Text(PairingStrings.disconnect),
-                                      ),
-                                    ],
-                                  ),
                                 ),
                               SizedBox(
                                 height: 68,
@@ -316,6 +331,7 @@ class _HomePageState extends State<HomePage> with Refena {
                                         ),
                                       );
                                     }
+
                                     return Expanded(
                                       child: InkWell(
                                         onTap: () => vm.changeTab(tab),
@@ -347,6 +363,63 @@ class _HomePageState extends State<HomePage> with Refena {
 
 const String? _darkBackgroundImage = null;
 const String? _lightBackgroundImage = null;
+
+class _PendingPairingPill extends StatefulWidget {
+  final VoidCallback onTap;
+
+  const _PendingPairingPill({required this.onTap});
+
+  @override
+  State<_PendingPairingPill> createState() => _PendingPairingPillState();
+}
+
+class _PendingPairingPillState extends State<_PendingPairingPill> with Refena {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final expiresAt = ref.watch(pairingControllerProvider).expiresAt;
+    final remaining = expiresAt == null ? Duration.zero : expiresAt.difference(DateTime.now());
+    final minutes = remaining.inMinutes.clamp(0, PairingController.sessionLifetime.inMinutes).toString().padLeft(2, '0');
+    final seconds = (remaining.inSeconds % 60).clamp(0, 59).toString().padLeft(2, '0');
+    return InkWell(
+      borderRadius: BorderRadius.circular(24),
+      onTap: widget.onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          children: [
+            Icon(Icons.wifi_tethering, color: Theme.of(context).colorScheme.tertiary),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '${PairingStrings.pairingActive} - $minutes:$seconds',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.labelMedium,
+              ),
+            ),
+            const Icon(Icons.open_in_new, size: 18),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _OmniDropBackground extends StatelessWidget {
   final ColorScheme colors;
