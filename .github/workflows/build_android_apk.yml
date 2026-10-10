@@ -98,7 +98,7 @@ jobs:
       - name: Build release APK
         if: ${{ inputs.build_type == 'release' }}
         working-directory: ${{ env.APK_BUILD_DIR }}/app
-        run: flutter build apk --release --target-platform android-arm64
+        run: flutter build apk --release --target-platform android-arm64 --split-per-abi
 
       - name: Upload debug APKs
         uses: actions/upload-artifact@v6
