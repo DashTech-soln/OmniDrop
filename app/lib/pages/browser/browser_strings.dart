@@ -10,6 +10,24 @@ abstract final class BrowserStrings {
 
   static const search = 'Search';
   static const searchFiles = 'Search files...';
+  static const searchIn = 'Search in';
+  static const send = 'Send';
+  static const sortBy = 'Sort by';
+  static const sortName = 'Name';
+  static const sortDate = 'Date';
+  static const sortSize = 'Size';
+  static const sortAscending = 'Ascending';
+  static const sortDescending = 'Descending';
+  static const cloudSyncComingSoon = 'Cloud sync between devices is coming soon';
+  static const cloud = 'Cloud';
+  static const storageUnavailable = 'Storage details unavailable';
+  static const calculating = 'Calculating...';
+  static const openSettings = 'Open settings';
+  static const clean = 'Clean';
+  static const glass = 'Glass';
+  static const surfaceStyle = 'Surface style';
+
+  static String searchHint(String category) => '$searchIn $category...';
   static const clearSearch = 'Clear search';
   static const closeSearch = 'Close search';
   static const clearSelection = 'Clear selection';
@@ -21,7 +39,6 @@ abstract final class BrowserStrings {
   static const couldNotLoadMedia = 'Could not load media.';
   static const noMediaFoundOrAccess = 'No media found or access was not granted.';
   static const mediaPermissionRequired = 'Allow media access to browse files in this category.';
-  static const openSettings = 'Open settings';
   static const photos = 'Photos';
   static const albums = 'Albums';
   static const noAlbums = 'No albums found.';
@@ -58,7 +75,6 @@ abstract final class BrowserStrings {
   static const sendSelection = 'SEND';
   static const selectionToolbar = 'Selected files';
   static const sendCountTemplate = 'SEND({count})';
-  static const send = 'Send';
   static const receive = 'Receive';
   static const transfer = 'Transfer';
 }

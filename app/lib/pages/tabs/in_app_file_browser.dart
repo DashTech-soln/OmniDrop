@@ -1,12 +1,15 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:device_apps/device_apps.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:localsend_app/pages/browser/browser_strings.dart';
 import 'package:localsend_app/pages/browser/browser_surface.dart';
+import 'package:localsend_app/pages/browser/browser_sort.dart';
 import 'package:localsend_app/config/theme.dart';
 import 'package:localsend_app/model/cross_file.dart';
 import 'package:localsend_app/provider/apk_provider.dart';
@@ -65,11 +68,27 @@ class InAppFileBrowser extends StatefulWidget {
   final ValueChanged<bool>? onHeaderVisibilityChanged;
   final VoidCallback? onUserActivity;
   final Future<void> Function()? onSendMessage;
+  final TextEditingController? searchController;
+  final bool searchExpanded;
+  final ValueChanged<String>? onSearchChanged;
+  final ValueChanged<String>? onCategoryChanged;
+  final BrowserSortMode sortMode;
+  final bool sortAscending;
+  final ValueChanged<BrowserSortMode>? onSortModeChanged;
+  final ValueChanged<bool>? onSortDirectionChanged;
 
   const InAppFileBrowser({
     this.onHeaderVisibilityChanged,
     this.onUserActivity,
     this.onSendMessage,
+    this.searchController,
+    this.searchExpanded = false,
+    this.onSearchChanged,
+    this.onCategoryChanged,
+    this.sortMode = BrowserSortMode.date,
+    this.sortAscending = false,
+    this.onSortModeChanged,
+    this.onSortDirectionChanged,
     super.key,
   });
 
@@ -77,10 +96,11 @@ class InAppFileBrowser extends StatefulWidget {
   State<InAppFileBrowser> createState() => _InAppFileBrowserState();
 }
 
-class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
+class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, AutomaticKeepAliveClientMixin {
   static const _systemFilesPageSize = 100;
   _BrowserCategory _category = _BrowserCategory.downloads;
   final _textController = TextEditingController();
+  TextEditingController get _searchController => widget.searchController ?? _textController;
   final _categoryScrollController = ScrollController();
   final _categoryKeys = List<GlobalKey>.generate(
     _BrowserCategory.values.length,
@@ -88,9 +108,10 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
   );
   final Map<String, Future<String>> _assetTitles = {};
   final Map<String, Future<int>> _assetCountFutures = {};
+  final Map<String, Future<List<AssetEntity>>> _assetSortFutures = {};
+  final Map<String, Future<List<Application>>> _appSortFutures = {};
   Timer? _searchDebounce;
   String _searchQuery = '';
-  bool _searchExpanded = false;
   bool _showAlbums = false;
   Future<List<AssetPathEntity>>? _assetPathsFuture;
   AssetPathEntity? _activeAssetPath;
@@ -112,26 +133,68 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
   bool _systemFilesPageError = false;
   bool _permissionRequired = false;
   String _saveLocation = 'internal';
+  int _reloadCount = 0;
 
   @override
   void initState() {
     super.initState();
+    _searchController.addListener(_handleSearchControllerChanged);
     _systemFilesFuture = Future.value([]);
+    if (defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS) {
+      PhotoManager.addChangeCallback(_onPhotoManagerChange);
+      unawaited(_startPhotoChangeNotifications());
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) => _openCategory(_category));
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => _initializeStorageTree(),
     );
   }
 
   @override
+  void didUpdateWidget(covariant InAppFileBrowser oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.searchController != widget.searchController) {
+      (oldWidget.searchController ?? _textController).removeListener(_handleSearchControllerChanged);
+      _searchController.addListener(_handleSearchControllerChanged);
+    }
+  }
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
   void dispose() {
     _searchDebounce?.cancel();
-    _textController.dispose();
+    _searchController.removeListener(_handleSearchControllerChanged);
+    if (widget.searchController == null) _textController.dispose();
     _categoryScrollController.dispose();
+    PhotoManager.removeChangeCallback(_onPhotoManagerChange);
     super.dispose();
   }
 
+  Future<void> _startPhotoChangeNotifications() async {
+    try {
+      if (!PhotoManager.notifyingOfChange) await PhotoManager.startChangeNotify();
+    } catch (error, stackTrace) {
+      _logPhotoError('photo_change_notifications', error, stackTrace);
+    }
+  }
+
+  void _onPhotoManagerChange(MethodCall _) {
+    final relevantOnPlatform =
+        _category == _BrowserCategory.images ||
+        (defaultTargetPlatform != TargetPlatform.android && const {_BrowserCategory.videos, _BrowserCategory.audio}.contains(_category));
+    if (!mounted || !relevantOnPlatform) {
+      return;
+    }
+    unawaited(_refreshCurrentCategory());
+  }
+
+  void _handleSearchControllerChanged() => _onSearchChanged(_searchController.text);
+
   Future<void> _openCategory(_BrowserCategory category) async {
     widget.onUserActivity?.call();
+    _logBrowserReload(category);
     setState(() {
       _category = category;
       _additionalSystemFiles.clear();
@@ -141,6 +204,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
       _systemFilesPageError = false;
       _permissionRequired = false;
     });
+    widget.onCategoryChanged?.call(category.label);
     if (category == _BrowserCategory.images) {
       _showAlbums = false;
       _activeAssetPath = null;
@@ -162,7 +226,9 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
     widget.onUserActivity?.call();
     _searchDebounce?.cancel();
     _searchDebounce = Timer(const Duration(milliseconds: 250), () {
-      if (mounted) setState(() => _searchQuery = value.trim().toLowerCase());
+      if (!mounted) return;
+      setState(() => _searchQuery = value.trim().toLowerCase());
+      widget.onSearchChanged?.call(value);
     });
   }
 
@@ -192,6 +258,170 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
   }
 
   bool _matchesSearch(String value) => _searchQuery.isEmpty || value.toLowerCase().contains(_searchQuery);
+
+  int _compareValues({
+    required String nameA,
+    required String nameB,
+    DateTime? dateA,
+    DateTime? dateB,
+    int? sizeA,
+    int? sizeB,
+  }) {
+    final result = switch (widget.sortMode) {
+      BrowserSortMode.name => nameA.toLowerCase().compareTo(nameB.toLowerCase()),
+      BrowserSortMode.date => (dateA ?? DateTime.fromMillisecondsSinceEpoch(0)).compareTo(dateB ?? DateTime.fromMillisecondsSinceEpoch(0)),
+      BrowserSortMode.size => (sizeA ?? 0).compareTo(sizeB ?? 0),
+    };
+    return widget.sortAscending ? result : -result;
+  }
+
+  List<android_channel.FileInfo> _sortFileInfos(Iterable<android_channel.FileInfo> source) {
+    final files = source.toList();
+    files.sort(
+      (a, b) => _compareValues(
+        nameA: _displayFileName(displayName: a.name, uri: a.uri),
+        nameB: _displayFileName(displayName: b.name, uri: b.uri),
+        dateA: DateTime.tryParse(a.lastModified ?? ''),
+        dateB: DateTime.tryParse(b.lastModified ?? ''),
+        sizeA: a.size,
+        sizeB: b.size,
+      ),
+    );
+    return files;
+  }
+
+  List<android_channel.AndroidBrowseEntry> _sortEntries(Iterable<android_channel.AndroidBrowseEntry> source) {
+    final entries = source.toList();
+    entries.sort((a, b) {
+      if (a.isDirectory != b.isDirectory) return a.isDirectory ? -1 : 1;
+      return _compareValues(
+        nameA: _displayFileName(displayName: a.name, uri: a.uri),
+        nameB: _displayFileName(displayName: b.name, uri: b.uri),
+        dateA: DateTime.tryParse(a.lastModified ?? ''),
+        dateB: DateTime.tryParse(b.lastModified ?? ''),
+        sizeA: a.size,
+        sizeB: b.size,
+      );
+    });
+    return entries;
+  }
+
+  Future<List<AssetEntity>> _sortAssets(List<AssetEntity> source) async {
+    final assets = [...source];
+    if (widget.sortMode == BrowserSortMode.name) {
+      final names = await Future.wait(
+        assets.map((asset) => _assetTitles.putIfAbsent(asset.id, () => asset.titleAsync)),
+      );
+      final keyed = List.generate(assets.length, (index) => (assets[index], names[index]));
+      keyed.sort((a, b) {
+        final value = a.$2.toLowerCase().compareTo(b.$2.toLowerCase());
+        return widget.sortAscending ? value : -value;
+      });
+      return keyed.map((entry) => entry.$1).toList();
+    }
+    if (widget.sortMode == BrowserSortMode.size) {
+      final sizes = await Future.wait(assets.map((asset) => asset.fileSize));
+      final keyed = List.generate(assets.length, (index) => (assets[index], sizes[index]));
+      keyed.sort((a, b) {
+        final value = a.$2.compareTo(b.$2);
+        return widget.sortAscending ? value : -value;
+      });
+      return keyed.map((entry) => entry.$1).toList();
+    }
+    assets.sort((a, b) {
+      final value = a.createDateTime.compareTo(b.createDateTime);
+      return widget.sortAscending ? value : -value;
+    });
+    return assets;
+  }
+
+  Future<List<AssetEntity>> _sortedAssets(List<AssetEntity> source) {
+    final key =
+        '${_category.name}:${_activeAssetPath?.id}:${widget.sortMode.name}:${widget.sortAscending}:${source.map((asset) => asset.id).join(',')}';
+    return _assetSortFutures.putIfAbsent(key, () => _sortAssets(source));
+  }
+
+  Future<List<Application>> _sortApps(List<Application> source) async {
+    final apps = [...source];
+    switch (widget.sortMode) {
+      case BrowserSortMode.name:
+        apps.sort((a, b) {
+          final value = a.appName.toLowerCase().compareTo(b.appName.toLowerCase());
+          return widget.sortAscending ? value : -value;
+        });
+        break;
+      case BrowserSortMode.date:
+        apps.sort((a, b) {
+          final value = a.updateTimeMillis.compareTo(b.updateTimeMillis);
+          return widget.sortAscending ? value : -value;
+        });
+        break;
+      case BrowserSortMode.size:
+        final sizes = await Future.wait(
+          apps.map((app) async {
+            try {
+              return await File(app.apkFilePath).length();
+            } on FileSystemException catch (error, stackTrace) {
+              _logger.warning('Could not read application package size for ${app.packageName}', error, stackTrace);
+              return null;
+            }
+          }),
+        );
+        final keyed = List.generate(apps.length, (index) => (apps[index], sizes[index]));
+        keyed.sort((a, b) {
+          final value = (a.$2 ?? -1).compareTo(b.$2 ?? -1);
+          return widget.sortAscending ? value : -value;
+        });
+        return keyed.map((entry) => entry.$1).toList();
+    }
+    return apps;
+  }
+
+  Future<List<Application>> _sortedApps(List<Application> source) {
+    final key = '${widget.sortMode.name}:${widget.sortAscending}:${source.map((app) => app.packageName).join(',')}';
+    return _appSortFutures.putIfAbsent(key, () => _sortApps(source));
+  }
+
+  void _logBrowserReload(_BrowserCategory category) {
+    debugPrint('Browser data load #${++_reloadCount}: ${category.name}');
+  }
+
+  Future<void> _refreshCurrentCategory() async {
+    _logBrowserReload(_category);
+    switch (_category) {
+      case _BrowserCategory.images:
+        await _retryPhotoQuery();
+        break;
+      case _BrowserCategory.videos:
+      case _BrowserCategory.audio:
+        if (defaultTargetPlatform == TargetPlatform.android) {
+          setState(() {
+            _additionalSystemFiles.clear();
+            _systemFilesOffset = 0;
+            _systemFilesFuture = _loadSystemFiles(_category);
+          });
+        } else {
+          await _retryPhotoQuery();
+        }
+        break;
+      case _BrowserCategory.downloads:
+      case _BrowserCategory.documents:
+        setState(() {
+          _additionalSystemFiles.clear();
+          _systemFilesOffset = 0;
+          _systemFilesFuture = _loadSystemFiles(_category);
+        });
+        break;
+      case _BrowserCategory.files:
+      case _BrowserCategory.text:
+        final uri = _currentFolderUri;
+        if (uri != null) setState(() => _treeEntriesFuture = android_channel.listFolderTreeAndroid(uri: uri));
+        break;
+      case _BrowserCategory.apps:
+        setState(() {});
+        break;
+    }
+  }
 
   void _logPhotoError(String step, Object error, StackTrace stackTrace) {
     _logger.warning(step, error, stackTrace);
@@ -530,7 +760,16 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
 
   bool _isPathSelected(String path) => ref.read(selectedSendingFilesProvider).any((file) => file.path == path);
 
-  Future<int> _assetCountFuture(AssetPathEntity path) => _assetCountFutures.putIfAbsent(path.id, () => path.assetCountAsync);
+  Future<int> _assetCountFuture(AssetPathEntity path) => _assetCountFutures.putIfAbsent(path.id, () {
+    return () async {
+      try {
+        return await path.assetCountAsync;
+      } catch (error, stackTrace) {
+        _logPhotoError('photo_album_count', error, stackTrace);
+        rethrow;
+      }
+    }();
+  });
 
   Widget _assetCountIndicator(AssetPathEntity path) {
     return FutureBuilder<int>(
@@ -538,7 +777,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return Tooltip(
-            message: '${BrowserStrings.couldNotLoadImages} ${snapshot.error}',
+            message: BrowserStrings.couldNotLoadImages,
             child: const Icon(Icons.error_outline, size: 14),
           );
         }
@@ -566,70 +805,14 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     context.watch(selectedSendingFilesProvider);
     final tokens = BrowserThemeTokens.of(context);
     final categories = _BrowserCategory.values;
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-          child: Row(
-            children: [
-              if (_searchExpanded)
-                Expanded(
-                  child: AnimatedSize(
-                    duration: const Duration(milliseconds: 180),
-                    curve: Curves.easeOut,
-                    child: BrowserSurface(
-                      padding: EdgeInsets.zero,
-                      borderRadius: BorderRadius.circular(glassRadiusInput),
-                      child: TextField(
-                        controller: _textController,
-                        autofocus: true,
-                        onChanged: _onSearchChanged,
-                        decoration: InputDecoration(
-                          filled: false,
-                          border: InputBorder.none,
-                          hintText: BrowserStrings.searchFiles,
-                          prefixIcon: const Icon(Icons.search),
-                          suffixIcon: IconButton(
-                            tooltip: BrowserStrings.clearSearch,
-                            onPressed: () {
-                              _textController.clear();
-                              _searchDebounce?.cancel();
-                              setState(() => _searchQuery = '');
-                            },
-                            icon: const Icon(Icons.close),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                )
-              else
-                IconButton(
-                  tooltip: BrowserStrings.search,
-                  onPressed: () => setState(() => _searchExpanded = true),
-                  icon: const Icon(Icons.search),
-                ),
-              if (_searchExpanded)
-                IconButton(
-                  tooltip: BrowserStrings.closeSearch,
-                  onPressed: () {
-                    _searchDebounce?.cancel();
-                    _textController.clear();
-                    setState(() {
-                      _searchExpanded = false;
-                      _searchQuery = '';
-                    });
-                  },
-                  icon: const Icon(Icons.close),
-                ),
-            ],
-          ),
-        ),
         SizedBox(
-          height: 50,
+          height: 50 * 2 / 3,
           child: ListView(
             controller: _categoryScrollController,
             scrollDirection: Axis.horizontal,
@@ -644,7 +827,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
                     onTap: () => _openCategory(category),
                     child: BrowserSurface(
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
+                        horizontal: 10,
                         vertical: 8,
                       ),
                       borderRadius: BorderRadius.circular(glassRadiusPill),
@@ -658,12 +841,18 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
                             color: _category == category ? tokens.primary : tokens.icon,
                           ),
                           const SizedBox(width: 6),
-                          Text(
-                            category.label,
-                            style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                              color: _category == category ? tokens.primary : tokens.textSecondary,
-                              fontWeight: _category == category ? FontWeight.w700 : FontWeight.w500,
-                            ),
+                          AnimatedSize(
+                            duration: const Duration(milliseconds: 180),
+                            curve: Curves.easeOut,
+                            child: _category == category
+                                ? Text(
+                                    category.label,
+                                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                                      color: tokens.primary,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  )
+                                : const SizedBox.shrink(),
                           ),
                         ],
                       ),
@@ -679,10 +868,16 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
             child: GestureDetector(
               onHorizontalDragEnd: _onHorizontalSwipe,
               child: BrowserSurface(
-                margin: const EdgeInsets.fromLTRB(4, 4, 4, 8),
+                margin: const EdgeInsets.fromLTRB(8, 0, 8, 8),
                 padding: EdgeInsets.zero,
                 borderRadius: BorderRadius.circular(glassRadiusCard),
-                child: _buildCategoryBody(),
+                child: RefreshIndicator(
+                  onRefresh: _refreshCurrentCategory,
+                  child: ScrollConfiguration(
+                    behavior: const _AlwaysScrollableBrowserBehavior(),
+                    child: _buildCategoryBody(),
+                  ),
+                ),
               ),
             ),
           ),
@@ -690,6 +885,14 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
       ],
     );
   }
+
+  Widget _openSettingsAction() => TextButton.icon(
+    onPressed: () async {
+      await openAppSettings();
+    },
+    icon: const Icon(Icons.settings_outlined),
+    label: const Text(BrowserStrings.openSettings),
+  );
 
   Widget _buildCategoryBody() => switch (_category) {
     _BrowserCategory.images => _buildImagesBrowser(),
@@ -728,6 +931,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
           return _emptyState(
             icon: _category.icon,
             message: _permissionRequired ? BrowserStrings.mediaPermissionRequired : BrowserStrings.noImagesFound,
+            action: _permissionRequired ? _openSettingsAction() : null,
           );
         }
         final photoAlbums = albums.length > 1 ? albums.skip(1).toList() : albums;
@@ -929,20 +1133,41 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
                 icon: _category.icon,
                 message: BrowserStrings.noFilesFound,
               );
-            return NotificationListener<ScrollNotification>(
-              onNotification: (notification) {
-                if (notification.metrics.extentAfter < 360 && !_loadingMoreAssets) {
-                  _loadMoreAssets(_BrowserCategory.images, album);
+            return FutureBuilder<List<AssetEntity>>(
+              future: _sortedAssets(filteredAssets),
+              builder: (context, sortedSnapshot) {
+                if (sortedSnapshot.connectionState != ConnectionState.done) {
+                  return const Center(child: CircularProgressIndicator());
                 }
-                return false;
+                final sortedAssets = sortedSnapshot.data ?? filteredAssets;
+                return NotificationListener<ScrollNotification>(
+                  onNotification: (notification) {
+                    if (notification.metrics.extentAfter < 360 && !_loadingMoreAssets) {
+                      _loadMoreAssets(_BrowserCategory.images, album);
+                    }
+                    return false;
+                  },
+                  child: widget.sortMode == BrowserSortMode.date ? _buildChronologicalPhotoGrid(sortedAssets) : _buildFlatPhotoGrid(sortedAssets),
+                );
               },
-              child: _buildChronologicalPhotoGrid(filteredAssets),
             );
           },
         );
       },
     );
   }
+
+  Widget _buildFlatPhotoGrid(List<AssetEntity> assets) => GridView.builder(
+    key: const PageStorageKey<String>('browser-photos-sorted'),
+    padding: const EdgeInsets.all(6),
+    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+      crossAxisCount: 3,
+      crossAxisSpacing: 4,
+      mainAxisSpacing: 4,
+    ),
+    itemCount: assets.length,
+    itemBuilder: (context, index) => _photoCell(assets[index]),
+  );
 
   Widget _buildChronologicalPhotoGrid(List<AssetEntity> assets) {
     final byDate = <DateTime, List<AssetEntity>>{};
@@ -1052,14 +1277,14 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
         if (assets.isEmpty) {
           return _emptyState(
             icon: _category.icon,
-            message: _permissionRequired ? BrowserStrings.mediaPermissionRequired : 'No ${_category.label.toLowerCase()} found.',
-            action: TextButton.icon(
-              onPressed: () => setState(
-                () => _assetPathsFuture = _loadAssetPaths(_category),
-              ),
-              icon: const Icon(Icons.refresh),
-              label: const Text('Check access'),
-            ),
+            message: _permissionRequired ? BrowserStrings.mediaPermissionRequired : BrowserStrings.noCategoryFiles,
+            action: _permissionRequired
+                ? _openSettingsAction()
+                : TextButton.icon(
+                    onPressed: () => _retryPhotoQuery(),
+                    icon: const Icon(Icons.refresh),
+                    label: const Text(BrowserStrings.checkAccess),
+                  ),
           );
         }
         return FutureBuilder<List<AssetEntity>>(
@@ -1072,68 +1297,63 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
                 icon: _category.icon,
                 message: BrowserStrings.noFilesFound,
               );
-            return NotificationListener<ScrollNotification>(
-              onNotification: (notification) {
-                final path = _activeAssetPath;
-                if (notification.metrics.extentAfter < 360 && path != null && !_loadingMoreAssets) {
-                  _loadMoreAssets(_category, path);
-                }
-                return false;
+            return FutureBuilder<List<AssetEntity>>(
+              future: _sortedAssets(filtered),
+              builder: (context, sortedSnapshot) {
+                if (sortedSnapshot.connectionState != ConnectionState.done) return const Center(child: CircularProgressIndicator());
+                final sorted = sortedSnapshot.data ?? filtered;
+                return NotificationListener<ScrollNotification>(
+                  onNotification: (notification) {
+                    final path = _activeAssetPath;
+                    if (notification.metrics.extentAfter < 360 && path != null && !_loadingMoreAssets) {
+                      _loadMoreAssets(_category, path);
+                    }
+                    return false;
+                  },
+                  child: ListView.builder(
+                    key: PageStorageKey<String>('browser-${_category.name}'),
+                    itemCount: sorted.length,
+                    itemBuilder: (context, index) {
+                      final asset = sorted[index];
+                      final selected = _isAssetSelected(asset);
+                      final title = _assetTitles.putIfAbsent(asset.id, () => asset.titleAsync);
+                      return FutureBuilder<String>(
+                        future: title,
+                        builder: (context, titleSnapshot) => _fileRow(
+                          selected: selected,
+                          icon: _category == _BrowserCategory.videos ? Icons.movie_outlined : Icons.audio_file_outlined,
+                          title: _displayFileName(title: titleSnapshot.data),
+                          subtitle: _category.label,
+                          leading: _category == _BrowserCategory.videos
+                              ? SizedBox(
+                                  width: 56,
+                                  height: 56,
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(glassRadiusSmall),
+                                    child: Stack(
+                                      fit: StackFit.expand,
+                                      children: [
+                                        AssetEntityImage(
+                                          asset,
+                                          isOriginal: false,
+                                          thumbnailSize: const ThumbnailSize.square(180),
+                                          fit: BoxFit.cover,
+                                        ),
+                                        Center(
+                                          child: Icon(Icons.play_circle_fill, color: BrowserThemeTokens.of(context).textPrimary),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                )
+                              : null,
+                          onTap: () => _toggleAsset(asset),
+                        ),
+                      );
+                    },
+                  ),
+                );
               },
-              child: ListView.builder(
-                key: PageStorageKey<String>('browser-${_category.name}'),
-                itemCount: filtered.length,
-                itemBuilder: (context, index) {
-                  final asset = filtered[index];
-                  final selected = _isAssetSelected(asset);
-                  final title = _assetTitles.putIfAbsent(
-                    asset.id,
-                    () => asset.titleAsync,
-                  );
-                  return FutureBuilder<String>(
-                    future: title,
-                    builder: (context, titleSnapshot) => _fileRow(
-                      selected: selected,
-                      icon: _category == _BrowserCategory.videos ? Icons.movie_outlined : Icons.audio_file_outlined,
-                      title: _displayFileName(title: titleSnapshot.data),
-                      subtitle: _category.label,
-                      leading: _category == _BrowserCategory.videos
-                          ? SizedBox(
-                              width: 56,
-                              height: 56,
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(
-                                  glassRadiusSmall,
-                                ),
-                                child: Stack(
-                                  fit: StackFit.expand,
-                                  children: [
-                                    AssetEntityImage(
-                                      asset,
-                                      isOriginal: false,
-                                      thumbnailSize: const ThumbnailSize.square(
-                                        180,
-                                      ),
-                                      fit: BoxFit.cover,
-                                    ),
-                                    Center(
-                                      child: Icon(
-                                        Icons.play_circle_fill,
-                                        color: BrowserThemeTokens.of(
-                                          context,
-                                        ).textPrimary,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            )
-                          : null,
-                      onTap: () => _toggleAsset(asset),
-                    ),
-                  );
-                },
-              ),
             );
           },
         );
@@ -1159,24 +1379,31 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
       ),
       data: (apps) {
         final matchingApps = apps.where((app) => _matchesSearch('${app.appName} ${app.packageName}')).toList();
-        final localApps = matchingApps.where((app) => !app.systemApp).toList();
-        final systemApps = matchingApps.where((app) => app.systemApp).toList();
-        return CustomScrollView(
-          key: const PageStorageKey<String>('browser-apps'),
-          slivers: [
-            _appSectionHeader(BrowserStrings.localApps, localApps.length),
-            _appGrid(localApps),
-            _appSectionHeader(BrowserStrings.systemApps, systemApps.length),
-            _appGrid(systemApps),
-            if (matchingApps.isEmpty)
-              SliverFillRemaining(
-                hasScrollBody: false,
-                child: _emptyState(
-                  icon: Icons.apps_outlined,
-                  message: _searchQuery.isEmpty ? BrowserStrings.noApplications : BrowserStrings.noFilesFound,
-                ),
-              ),
-          ],
+        return FutureBuilder<List<Application>>(
+          future: _sortedApps(matchingApps),
+          builder: (context, sortedSnapshot) {
+            if (sortedSnapshot.connectionState != ConnectionState.done) return const Center(child: CircularProgressIndicator());
+            final orderedApps = sortedSnapshot.data ?? matchingApps;
+            final orderedLocalApps = orderedApps.where((app) => !app.systemApp).toList();
+            final orderedSystemApps = orderedApps.where((app) => app.systemApp).toList();
+            return CustomScrollView(
+              key: const PageStorageKey<String>('browser-apps'),
+              slivers: [
+                _appSectionHeader(BrowserStrings.localApps, orderedLocalApps.length),
+                _appGrid(orderedLocalApps),
+                _appSectionHeader(BrowserStrings.systemApps, orderedSystemApps.length),
+                _appGrid(orderedSystemApps),
+                if (matchingApps.isEmpty)
+                  SliverFillRemaining(
+                    hasScrollBody: false,
+                    child: _emptyState(
+                      icon: Icons.apps_outlined,
+                      message: _searchQuery.isEmpty ? BrowserStrings.noApplications : BrowserStrings.noFilesFound,
+                    ),
+                  ),
+              ],
+            );
+          },
         );
       },
     );
@@ -1196,7 +1423,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
               crossAxisCount: 4,
               mainAxisSpacing: 4,
               crossAxisSpacing: 4,
-              childAspectRatio: 0.95,
+              childAspectRatio: 1.0,
             ),
             itemCount: apps.length,
             itemBuilder: (context, index) => _appCell(apps[index]),
@@ -1359,18 +1586,14 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
                 )
               : const Center(child: CircularProgressIndicator());
         }
-        final entries =
-            [...?snapshot.data].where(
-              (entry) {
-                final name = _displayFileName(displayName: entry.name, uri: entry.uri);
-                return (!textOnly || entry.isDirectory || _isTextFile(name)) && _matchesSearch(name);
-              },
-            ).toList()..sort((a, b) {
-              if (a.isDirectory != b.isDirectory) return a.isDirectory ? -1 : 1;
-              final aName = _displayFileName(displayName: a.name, uri: a.uri);
-              final bName = _displayFileName(displayName: b.name, uri: b.uri);
-              return aName.toLowerCase().compareTo(bName.toLowerCase());
-            });
+        final entries = _sortEntries(
+          [...?snapshot.data].where(
+            (entry) {
+              final name = _displayFileName(displayName: entry.name, uri: entry.uri);
+              return (!textOnly || entry.isDirectory || _isTextFile(name)) && _matchesSearch(name);
+            },
+          ),
+        );
         if (snapshot.hasError) {
           final error = _emptyState(
             icon: Icons.folder_off_outlined,
@@ -1531,12 +1754,13 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
           );
         }
         final allFiles = [...?snapshot.data, ..._additionalSystemFiles];
-        final files = allFiles
-            .where(
-              (file) => _category != _BrowserCategory.text || _isTextFile(_displayFileName(displayName: file.name, uri: file.uri)),
-            )
-            .where((file) => _matchesSearch(_displayFileName(displayName: file.name, uri: file.uri)))
-            .toList();
+        final files = _sortFileInfos(
+          allFiles
+              .where(
+                (file) => _category != _BrowserCategory.text || _isTextFile(_displayFileName(displayName: file.name, uri: file.uri)),
+              )
+              .where((file) => _matchesSearch(_displayFileName(displayName: file.name, uri: file.uri))),
+        );
         if (files.isEmpty) {
           return _emptyState(
             icon: _category.icon,
@@ -1577,7 +1801,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
 
   Widget _buildAndroidMediaBrowser() {
     final future = _systemFilesFuture;
-    if (future == null) return const Center(child: Text('Open this category to browse media.'));
+    if (future == null) return const Center(child: Text(BrowserStrings.noFolderAccessForCategory));
     return FutureBuilder<List<android_channel.FileInfo>>(
       future: future,
       builder: (context, snapshot) {
@@ -1585,20 +1809,22 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
         if (snapshot.hasError) {
           return _emptyState(
             icon: _category.icon,
-            message: 'Could not load ${_category.label.toLowerCase()} files: ${snapshot.error}',
+            message: BrowserStrings.couldNotLoadCategoryFiles,
             action: TextButton.icon(
               onPressed: () => setState(
                 () => _systemFilesFuture = _loadSystemFiles(_category),
               ),
               icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
+              label: const Text(BrowserStrings.retry),
             ),
           );
         }
-        final files = [
-          ...?snapshot.data,
-          ..._additionalSystemFiles,
-        ].where((file) => _matchesSearch(_displayFileName(displayName: file.name, uri: file.uri))).toList();
+        final files = _sortFileInfos(
+          [
+            ...?snapshot.data,
+            ..._additionalSystemFiles,
+          ].where((file) => _matchesSearch(_displayFileName(displayName: file.name, uri: file.uri))),
+        );
         if (files.isEmpty) {
           return _emptyState(
             icon: _category.icon,
@@ -1606,19 +1832,14 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
                 ? BrowserStrings.noFilesFound
                 : _permissionRequired
                 ? BrowserStrings.mediaPermissionRequired
-                : 'No ${_category.label.toLowerCase()} found.',
-            action: TextButton.icon(
-              onPressed: () => setState(() {
-                _additionalSystemFiles.clear();
-                _systemFilesOffset = 0;
-                _hasMoreSystemFiles = false;
-                _loadingMoreSystemFiles = false;
-                _systemFilesPageError = false;
-                _systemFilesFuture = _loadSystemFiles(_category);
-              }),
-              icon: const Icon(Icons.refresh),
-              label: const Text('Check access'),
-            ),
+                : BrowserStrings.noCategoryFiles,
+            action: _permissionRequired
+                ? _openSettingsAction()
+                : TextButton.icon(
+                    onPressed: _refreshCurrentCategory,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text(BrowserStrings.checkAccess),
+                  ),
           );
         }
         return ListView.builder(
@@ -1920,4 +2141,11 @@ class _StorageStatisticsPlaceholder extends StatelessWidget {
       ),
     );
   }
+}
+
+class _AlwaysScrollableBrowserBehavior extends MaterialScrollBehavior {
+  const _AlwaysScrollableBrowserBehavior();
+
+  @override
+  ScrollPhysics getScrollPhysics(BuildContext context) => const AlwaysScrollableScrollPhysics();
 }

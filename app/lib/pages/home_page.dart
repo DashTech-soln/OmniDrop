@@ -8,6 +8,8 @@ import 'package:localsend_app/config/theme.dart';
 import 'package:localsend_app/gen/strings.g.dart';
 import 'package:localsend_app/pages/browser/browser_strings.dart';
 import 'package:localsend_app/pages/browser/browser_surface.dart';
+import 'package:localsend_app/pages/browser/browser_sort.dart';
+import 'package:localsend_app/pages/browser/transfer_pill_notifier.dart';
 import 'package:localsend_app/pages/copy_phone_page.dart';
 import 'package:localsend_app/pages/home_page_controller.dart';
 import 'package:localsend_app/pages/omnidrop_drawer.dart';
@@ -27,7 +29,6 @@ import 'package:localsend_app/provider/network/server/server_provider.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
 import 'package:localsend_app/util/native/channel/android_channel.dart' as android_channel;
 import 'package:localsend_app/util/native/cross_file_converters.dart';
-import 'package:localsend_app/widget/animated_press.dart';
 import 'package:localsend_app/widget/dialogs/add_file_dialog.dart';
 import 'package:localsend_app/widget/dialogs/receive_pairing_dialog.dart';
 import 'package:localsend_app/widget/glass/glass_card.dart';
@@ -42,6 +43,7 @@ enum HomeTab {
   webDrop(Icons.language),
   osPairs(Icons.devices),
   send(Icons.send),
+  cloud(Icons.cloud_outlined),
   me(Icons.person_outline)
   ;
 
@@ -57,6 +59,8 @@ enum HomeTab {
         return 'OS Pairs';
       case HomeTab.send:
         return 'Transfer';
+      case HomeTab.cloud:
+        return BrowserStrings.cloud;
       case HomeTab.me:
         return 'Me';
     }
@@ -80,6 +84,12 @@ class _HomePageState extends State<HomePage> with Refena, SingleTickerProviderSt
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _transferTabKey = GlobalKey<_TransferTabState>();
   late final AnimationController _headerAnimationController;
+  final _searchController = TextEditingController();
+  final _transferPillNotifier = TransferPillNotifier();
+  bool _searchExpanded = false;
+  String _searchCategory = BrowserStrings.downloads;
+  BrowserSortMode _sortMode = BrowserSortMode.date;
+  bool _sortAscending = false;
   HomeTab? _lastHomeTab;
   bool _dragAndDropIndicator = false;
   bool _expiryNoticeShown = false;
@@ -112,9 +122,18 @@ class _HomePageState extends State<HomePage> with Refena, SingleTickerProviderSt
     }
   }
 
+  void _openSearch() => setState(() => _searchExpanded = true);
+
+  void _closeSearch() {
+    _searchController.clear();
+    setState(() => _searchExpanded = false);
+  }
+
   @override
   void dispose() {
     _headerAnimationController.dispose();
+    _searchController.dispose();
+    _transferPillNotifier.dispose();
     super.dispose();
   }
 
@@ -125,350 +144,469 @@ class _HomePageState extends State<HomePage> with Refena, SingleTickerProviderSt
     if (_lastHomeTab != vm.currentTab) {
       _lastHomeTab = vm.currentTab;
       if (vm.currentTab == HomeTab.send) {
+        _transferPillNotifier.showForEntry();
         WidgetsBinding.instance.addPostFrameCallback(
           (_) => _setBrowserHeaderVisible(true),
         );
       }
     }
 
-    return DropTarget(
-      onDragEntered: (_) {
-        setState(() {
-          _dragAndDropIndicator = true;
-        });
+    return PopScope<void>(
+      canPop: !_searchExpanded,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _searchExpanded) _closeSearch();
       },
-      onDragExited: (_) {
-        setState(() {
-          _dragAndDropIndicator = false;
-        });
-      },
-      onDragDone: (event) async {
-        // the drop may contain a mix of files and directories
-        final droppedDirectories = event.files.where((file) => Directory(file.path).existsSync()).toList();
-        final droppedFiles = event.files.where((file) => !Directory(file.path).existsSync()).toList();
+      child: DropTarget(
+        onDragEntered: (_) {
+          setState(() {
+            _dragAndDropIndicator = true;
+          });
+        },
+        onDragExited: (_) {
+          setState(() {
+            _dragAndDropIndicator = false;
+          });
+        },
+        onDragDone: (event) async {
+          // the drop may contain a mix of files and directories
+          final droppedDirectories = event.files.where((file) => Directory(file.path).existsSync()).toList();
+          final droppedFiles = event.files.where((file) => !Directory(file.path).existsSync()).toList();
 
-        for (final directory in droppedDirectories) {
-          await ref.redux(selectedSendingFilesProvider).dispatchAsync(AddDirectoryAction(directory.path));
-        }
+          for (final directory in droppedDirectories) {
+            await ref.redux(selectedSendingFilesProvider).dispatchAsync(AddDirectoryAction(directory.path));
+          }
 
-        if (droppedFiles.isNotEmpty) {
-          await ref
-              .redux(selectedSendingFilesProvider)
-              .dispatchAsync(
-                AddFilesAction(
-                  files: droppedFiles,
-                  converter: CrossFileConverters.convertXFile,
+          if (droppedFiles.isNotEmpty) {
+            await ref
+                .redux(selectedSendingFilesProvider)
+                .dispatchAsync(
+                  AddFilesAction(
+                    files: droppedFiles,
+                    converter: CrossFileConverters.convertXFile,
+                  ),
+                );
+          }
+          vm.changeTab(HomeTab.send);
+        },
+        child: ResponsiveBuilder(
+          builder: (sizingInformation) {
+            final colors = Theme.of(context).colorScheme;
+            final light = Theme.of(context).brightness == Brightness.light;
+            return Scaffold(
+              key: _scaffoldKey,
+              drawer: const OmniDropDrawer(),
+              endDrawer: Drawer(
+                backgroundColor: Colors.transparent,
+                child: GlassCard(
+                  margin: EdgeInsets.zero,
+                  padding: EdgeInsets.zero,
+                  radius: 0,
+                  blur: true,
+                  child: SafeArea(child: const SettingsTab()),
                 ),
-              );
-        }
-        vm.changeTab(HomeTab.send);
-      },
-      child: ResponsiveBuilder(
-        builder: (sizingInformation) {
-          final colors = Theme.of(context).colorScheme;
-          final light = Theme.of(context).brightness == Brightness.light;
-          return Scaffold(
-            key: _scaffoldKey,
-            drawer: const OmniDropDrawer(),
-            endDrawer: Drawer(
-              backgroundColor: Colors.transparent,
-              child: GlassCard(
-                margin: EdgeInsets.zero,
-                padding: EdgeInsets.zero,
-                radius: 0,
-                blur: true,
-                child: SafeArea(child: const SettingsTab()),
               ),
-            ),
-            appBar: PreferredSize(
-              preferredSize: Size.fromHeight(
-                kToolbarHeight * _headerAnimationController.value,
-              ),
-              child: ClipRect(
-                child: SizedBox(
-                  height: kToolbarHeight,
-                  child: AppBar(
-                    automaticallyImplyLeading: false,
-                    backgroundColor: Colors.transparent,
-                    flexibleSpace: DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.centerLeft,
-                          end: Alignment.centerRight,
-                          colors: [
-                            colors.primary.withValues(
-                              alpha: light ? 0.24 : 0.16,
-                            ),
-                            colors.secondary.withValues(
-                              alpha: light ? 0.16 : 0.08,
-                            ),
-                          ],
+              appBar: PreferredSize(
+                preferredSize: Size.fromHeight(
+                  kToolbarHeight * _headerAnimationController.value,
+                ),
+                child: ClipRect(
+                  child: SizedBox(
+                    height: kToolbarHeight,
+                    child: AppBar(
+                      automaticallyImplyLeading: false,
+                      backgroundColor: Colors.transparent,
+                      flexibleSpace: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.centerLeft,
+                            end: Alignment.centerRight,
+                            colors: [
+                              colors.primary.withValues(
+                                alpha: light ? 0.24 : 0.16,
+                              ),
+                              colors.secondary.withValues(
+                                alpha: light ? 0.16 : 0.08,
+                              ),
+                            ],
+                          ),
                         ),
                       ),
-                    ),
-                    leading: IconButton(
-                      tooltip: 'Open navigation drawer',
-                      onPressed: () => _scaffoldKey.currentState?.openDrawer(),
-                      icon: const Icon(Icons.more_vert),
-                    ),
-                    title: Row(
-                      children: [
-                        const OmniDropLogo(size: 32),
-                        const SizedBox(width: 8),
-                        const Text('OmniDrop'),
-                      ],
-                    ),
-                    actions: [
-                      PopupMenuButton<String>(
-                        tooltip: 'More actions',
-                        icon: const Icon(Icons.menu),
-                        onSelected: (value) async {
-                          if (value == 'scan') {
-                            await showReceivePairingDialog(
-                              context,
-                              allowWebDropLinks: true,
-                            );
-                          } else if (value == 'share') {
-                            final shared = await android_channel.shareInstalledApkAndroid();
-                            if (!shared) await android_channel.shareTextInviteAndroid();
-                          } else {
-                            final started = await Navigator.of(context).push<bool>(
-                              MaterialPageRoute(
-                                builder: (_) => const CopyPhonePage(),
+                      leading: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 200),
+                        transitionBuilder: (child, animation) => FadeTransition(
+                          opacity: animation,
+                          child: SlideTransition(
+                            position: Tween<Offset>(begin: const Offset(-0.15, 0), end: Offset.zero).animate(animation),
+                            child: child,
+                          ),
+                        ),
+                        child: _searchExpanded
+                            ? IconButton(
+                                key: const ValueKey('search-back'),
+                                tooltip: BrowserStrings.closeSearch,
+                                onPressed: _closeSearch,
+                                icon: const Icon(Icons.arrow_back),
+                              )
+                            : IconButton(
+                                key: const ValueKey('navigation-drawer'),
+                                tooltip: 'Open navigation drawer',
+                                onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+                                icon: const Icon(Icons.more_vert),
                               ),
-                            );
-                            if (started == true && context.mounted) {
-                              vm.changeTab(HomeTab.send);
-                              final transferState = _transferTabKey.currentState;
-                              if (transferState != null) await transferState._startSend();
-                            }
-                          }
-                        },
-                        itemBuilder: (context) => const [
-                          PopupMenuItem(
-                            value: 'scan',
-                            child: Text('Scan Connect'),
-                          ),
-                          PopupMenuItem(
-                            value: 'share',
-                            child: Text('Share OmniDrop'),
-                          ),
-                          PopupMenuItem(
-                            value: 'copy',
-                            child: Text('Copy Phone'),
-                          ),
-                        ],
                       ),
-                      IconButton(
-                        tooltip: 'Settings',
-                        onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
-                        icon: const Icon(Icons.settings_outlined),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            body: Stack(
-              fit: StackFit.expand,
-              children: [
-                _OmniDropBackground(colors: colors, light: light),
-                Row(
-                  children: [
-                    if (!sizingInformation.isMobile)
-                      NavigationRail(
-                        selectedIndex: vm.currentTab.index,
-                        onDestinationSelected: (index) => vm.changeTab(HomeTab.values[index]),
-                        extended: sizingInformation.isDesktop,
-                        backgroundColor: Colors.transparent,
-                        destinations: HomeTab.values.map((tab) {
-                          return NavigationRailDestination(
-                            icon: tab == HomeTab.send ? const OmniDropLogo(size: 24) : Icon(tab.icon),
-                            label: Text(tab.label),
-                          );
-                        }).toList(),
-                      ),
-                    Expanded(
-                      child: SafeArea(
-                        left: sizingInformation.isMobile,
-                        child: Stack(
-                          children: [
-                            PageView(
-                              controller: vm.controller,
-                              physics: const NeverScrollableScrollPhysics(),
-                              children: [
-                                const WebDropTab(),
-                                const OsPairsTab(),
-                                _TransferTab(
-                                  key: _transferTabKey,
-                                  isActive: vm.currentTab == HomeTab.send,
-                                  onHeaderVisibilityChanged: _setBrowserHeaderVisible,
+                      title: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 200),
+                        transitionBuilder: (child, animation) => FadeTransition(
+                          opacity: animation,
+                          child: SlideTransition(
+                            position: Tween<Offset>(begin: const Offset(0.08, 0), end: Offset.zero).animate(animation),
+                            child: child,
+                          ),
+                        ),
+                        child: _searchExpanded
+                            ? BrowserSurface(
+                                key: const ValueKey('header-search'),
+                                padding: EdgeInsets.zero,
+                                borderRadius: BorderRadius.circular(glassRadiusInput),
+                                child: TextField(
+                                  controller: _searchController,
+                                  autofocus: true,
+                                  decoration: InputDecoration(
+                                    border: InputBorder.none,
+                                    hintText: BrowserStrings.searchHint(_searchCategory),
+                                    prefixIcon: const Icon(Icons.search),
+                                    suffixIcon: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        PopupMenuButton<BrowserSortMode>(
+                                          tooltip: BrowserStrings.sortBy,
+                                          initialValue: _sortMode,
+                                          onSelected: (value) => setState(() => _sortMode = value),
+                                          itemBuilder: (context) => [
+                                            for (final mode in BrowserSortMode.values)
+                                              PopupMenuItem(
+                                                value: mode,
+                                                child: Text(switch (mode) {
+                                                  BrowserSortMode.name => BrowserStrings.sortName,
+                                                  BrowserSortMode.date => BrowserStrings.sortDate,
+                                                  BrowserSortMode.size => BrowserStrings.sortSize,
+                                                }),
+                                              ),
+                                          ],
+                                          child: Icon(Icons.sort, color: colors.onSurfaceVariant),
+                                        ),
+                                        IconButton(
+                                          tooltip: _sortAscending ? BrowserStrings.sortAscending : BrowserStrings.sortDescending,
+                                          onPressed: () => setState(() => _sortAscending = !_sortAscending),
+                                          icon: Icon(_sortAscending ? Icons.arrow_upward : Icons.arrow_downward),
+                                        ),
+                                        IconButton(
+                                          tooltip: BrowserStrings.closeSearch,
+                                          onPressed: _closeSearch,
+                                          icon: const Icon(Icons.close),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
                                 ),
-                                const MeTab(),
-                              ],
+                              )
+                            : const Row(
+                                key: ValueKey('app-title'),
+                                children: [
+                                  OmniDropLogo(size: 32),
+                                  SizedBox(width: 8),
+                                  Text('OmniDrop'),
+                                ],
+                              ),
+                      ),
+                      actions: [
+                        AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 200),
+                          transitionBuilder: (child, animation) => FadeTransition(
+                            opacity: animation,
+                            child: SlideTransition(
+                              position: Tween<Offset>(begin: const Offset(0.1, 0), end: Offset.zero).animate(animation),
+                              child: child,
                             ),
-                            if (_dragAndDropIndicator)
-                              Container(
-                                width: double.infinity,
-                                decoration: BoxDecoration(
-                                  color: Theme.of(
-                                    context,
-                                  ).scaffoldBackgroundColor,
-                                ),
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
+                          ),
+                          child: _searchExpanded
+                              ? const SizedBox(key: ValueKey('search-actions-hidden'))
+                              : Row(
+                                  key: const ValueKey('normal-header-actions'),
+                                  mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    const Icon(Icons.file_download, size: 128),
-                                    const SizedBox(height: 30),
-                                    Text(
-                                      t.sendTab.placeItems,
-                                      style: Theme.of(
-                                        context,
-                                      ).textTheme.titleLarge,
+                                    IconButton(
+                                      tooltip: BrowserStrings.search,
+                                      onPressed: _openSearch,
+                                      icon: const Icon(Icons.search),
+                                    ),
+                                    PopupMenuButton<String>(
+                                      tooltip: 'More actions',
+                                      icon: const Icon(Icons.menu),
+                                      onSelected: (value) async {
+                                        if (value == 'scan') {
+                                          await showReceivePairingDialog(
+                                            context,
+                                            allowWebDropLinks: true,
+                                          );
+                                        } else if (value == 'share') {
+                                          final shared = await android_channel.shareInstalledApkAndroid();
+                                          if (!shared) await android_channel.shareTextInviteAndroid();
+                                        } else {
+                                          final started = await Navigator.of(context).push<bool>(
+                                            MaterialPageRoute(
+                                              builder: (_) => const CopyPhonePage(),
+                                            ),
+                                          );
+                                          if (started == true && context.mounted) {
+                                            vm.changeTab(HomeTab.send);
+                                            final transferState = _transferTabKey.currentState;
+                                            if (transferState != null) await transferState._startSend();
+                                          }
+                                        }
+                                      },
+                                      itemBuilder: (context) => const [
+                                        PopupMenuItem(
+                                          value: 'scan',
+                                          child: Text('Scan Connect'),
+                                        ),
+                                        PopupMenuItem(
+                                          value: 'share',
+                                          child: Text('Share OmniDrop'),
+                                        ),
+                                        PopupMenuItem(
+                                          value: 'copy',
+                                          child: Text('Copy Phone'),
+                                        ),
+                                      ],
+                                    ),
+                                    IconButton(
+                                      tooltip: 'Settings',
+                                      onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
+                                      icon: const Icon(Icons.settings_outlined),
                                     ),
                                   ],
                                 ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              body: Stack(
+                fit: StackFit.expand,
+                children: [
+                  _OmniDropBackground(colors: colors, light: light),
+                  Row(
+                    children: [
+                      if (!sizingInformation.isMobile)
+                        NavigationRail(
+                          selectedIndex: vm.currentTab.index,
+                          onDestinationSelected: (index) => vm.changeTab(HomeTab.values[index]),
+                          extended: sizingInformation.isDesktop,
+                          backgroundColor: Colors.transparent,
+                          destinations: HomeTab.values.map((tab) {
+                            return NavigationRailDestination(
+                              icon: tab == HomeTab.send ? const OmniDropLogo(size: 24) : Icon(tab.icon),
+                              label: Text(tab.label),
+                            );
+                          }).toList(),
+                        ),
+                      Expanded(
+                        child: SafeArea(
+                          left: sizingInformation.isMobile,
+                          child: Stack(
+                            children: [
+                              PageView(
+                                controller: vm.controller,
+                                physics: const NeverScrollableScrollPhysics(),
+                                children: [
+                                  const WebDropTab(),
+                                  const OsPairsTab(),
+                                  _TransferTab(
+                                    key: _transferTabKey,
+                                    onHeaderVisibilityChanged: _setBrowserHeaderVisible,
+                                    searchController: _searchController,
+                                    searchExpanded: _searchExpanded,
+                                    searchCategory: _searchCategory,
+                                    sortMode: _sortMode,
+                                    sortAscending: _sortAscending,
+                                    onCategoryChanged: (category) => setState(() => _searchCategory = category),
+                                    onSortModeChanged: (mode) => setState(() => _sortMode = mode),
+                                    onSortDirectionChanged: (ascending) => setState(() => _sortAscending = ascending),
+                                    transferPillNotifier: _transferPillNotifier,
+                                  ),
+                                  const CloudTab(),
+                                  const MeTab(),
+                                ],
                               ),
-                          ],
+                              if (_dragAndDropIndicator)
+                                Container(
+                                  width: double.infinity,
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(
+                                      context,
+                                    ).scaffoldBackgroundColor,
+                                  ),
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      const Icon(Icons.file_download, size: 128),
+                                      const SizedBox(height: 30),
+                                      Text(
+                                        t.sendTab.placeItems,
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.titleLarge,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                            ],
+                          ),
                         ),
                       ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-            bottomNavigationBar: sizingInformation.isMobile
-                ? SafeArea(
-                    top: false,
-                    child: Consumer(
-                      builder: (context, ref) {
-                        final pairing = ref.watch(pairingControllerProvider);
-                        final selectedFiles = ref.watch(
-                          selectedSendingFilesProvider,
-                        );
-                        final showActivePairing = pairing.role == PairingRole.sender && pairing.sessionToken != null;
-                        if (pairing.phase == PairingPhase.stopped && pairing.failureReason == PairingStrings.sessionExpired && !_expiryNoticeShown) {
-                          _expiryNoticeShown = true;
-                          WidgetsBinding.instance.addPostFrameCallback((_) {
-                            if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text(PairingStrings.sessionExpired),
-                                ),
-                              );
-                            }
-                          });
-                        } else if (pairing.phase != PairingPhase.stopped) {
-                          _expiryNoticeShown = false;
-                        }
-                        if (vm.currentTab == HomeTab.send && selectedFiles.isNotEmpty) {
-                          return _BrowserSelectionToolbar(
-                            count: selectedFiles.length,
-                            onCancel: () => ref.redux(selectedSendingFilesProvider).dispatch(ClearSelectionAction()),
-                            onSend: () => _transferTabKey.currentState?._openSendPairingCard(),
+                    ],
+                  ),
+                ],
+              ),
+              bottomNavigationBar: sizingInformation.isMobile
+                  ? SafeArea(
+                      top: false,
+                      child: Consumer(
+                        builder: (context, ref) {
+                          final pairing = ref.watch(pairingControllerProvider);
+                          final selectedFiles = ref.watch(
+                            selectedSendingFilesProvider,
                           );
-                        }
-                        return GlassCard(
-                          margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-                          padding: EdgeInsets.zero,
-                          radius: 30,
-                          blur: true,
-                          child: Column(
+                          final showActivePairing = pairing.role == PairingRole.sender && pairing.sessionToken != null;
+                          if (pairing.phase == PairingPhase.stopped &&
+                              pairing.failureReason == PairingStrings.sessionExpired &&
+                              !_expiryNoticeShown) {
+                            _expiryNoticeShown = true;
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(PairingStrings.sessionExpired),
+                                  ),
+                                );
+                              }
+                            });
+                          } else if (pairing.phase != PairingPhase.stopped) {
+                            _expiryNoticeShown = false;
+                          }
+                          if (vm.currentTab == HomeTab.send && selectedFiles.isNotEmpty) {
+                            return _BrowserSelectionToolbar(
+                              count: selectedFiles.length,
+                              onCancel: () => ref.redux(selectedSendingFilesProvider).dispatch(ClearSelectionAction()),
+                              onSend: () => _transferTabKey.currentState?._openSendPairingCard(),
+                            );
+                          }
+                          return Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               if (showActivePairing)
                                 Padding(
-                                  padding: const EdgeInsets.fromLTRB(
-                                    14,
-                                    8,
-                                    8,
-                                    4,
-                                  ),
+                                  padding: const EdgeInsets.fromLTRB(14, 4, 8, 4),
                                   child: pairing.peers.isEmpty
                                       ? _PendingPairingPill(
                                           onTap: () => _transferTabKey.currentState?._openSendPairingCard(),
                                         )
                                       : Row(
                                           children: [
-                                            Icon(
-                                              Icons.wifi_tethering,
-                                              color: Theme.of(
-                                                context,
-                                              ).colorScheme.tertiary,
-                                            ),
+                                            Icon(Icons.wifi_tethering, color: Theme.of(context).colorScheme.tertiary),
                                             const SizedBox(width: 8),
                                             Expanded(
                                               child: Text(
                                                 '${PairingStrings.pairActive} - ${pairing.peers.length} ${PairingStrings.devicesCount}',
                                                 maxLines: 1,
                                                 overflow: TextOverflow.ellipsis,
-                                                style: Theme.of(
-                                                  context,
-                                                ).textTheme.labelMedium,
+                                                style: Theme.of(context).textTheme.labelMedium,
                                               ),
                                             ),
                                             TextButton(
-                                              onPressed: () => ref
-                                                  .notifier(
-                                                    pairingControllerProvider,
-                                                  )
-                                                  .stop(),
-                                              child: const Text(
-                                                PairingStrings.disconnect,
-                                              ),
+                                              onPressed: () => ref.notifier(pairingControllerProvider).stop(),
+                                              child: const Text(PairingStrings.disconnect),
                                             ),
                                           ],
                                         ),
                                 ),
-                              SizedBox(
-                                height: 68,
-                                child: Row(
-                                  children: HomeTab.values.map((tab) {
-                                    final selected = vm.currentTab == tab;
-                                    if (tab == HomeTab.send) {
-                                      return Expanded(
-                                        child: Center(
+                              BrowserSurface(
+                                margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                                padding: EdgeInsets.zero,
+                                borderRadius: BorderRadius.circular(30),
+                                child: SizedBox(
+                                  height: 34,
+                                  child: Stack(
+                                    clipBehavior: Clip.none,
+                                    alignment: Alignment.center,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          _bottomBarTab(HomeTab.webDrop, vm.currentTab, vm.changeTab),
+                                          _bottomBarTab(HomeTab.osPairs, vm.currentTab, vm.changeTab),
+                                          const Expanded(child: SizedBox()),
+                                          _bottomBarTab(HomeTab.cloud, vm.currentTab, vm.changeTab),
+                                          _bottomBarTab(HomeTab.me, vm.currentTab, vm.changeTab),
+                                        ],
+                                      ),
+                                      Positioned(
+                                        top: -11,
+                                        child: Container(
+                                          padding: const EdgeInsets.all(2),
+                                          decoration: BoxDecoration(
+                                            shape: BoxShape.circle,
+                                            boxShadow: [
+                                              BoxShadow(
+                                                color: colors.primary.withValues(alpha: 0.5),
+                                                blurRadius: 12,
+                                              ),
+                                            ],
+                                          ),
                                           child: FloatingActionButton(
                                             heroTag: 'transfer-tab',
-                                            onPressed: () => vm.changeTab(tab),
+                                            mini: false,
+                                            onPressed: () {
+                                              if (vm.currentTab != HomeTab.send) {
+                                                vm.changeTab(HomeTab.send);
+                                              } else {
+                                                _transferPillNotifier.toggle();
+                                              }
+                                            },
                                             child: const OmniDropLogo(size: 28),
                                           ),
                                         ),
-                                      );
-                                    }
-
-                                    return Expanded(
-                                      child: InkWell(
-                                        onTap: () => vm.changeTab(tab),
-                                        child: Column(
-                                          mainAxisAlignment: MainAxisAlignment.center,
-                                          children: [
-                                            Icon(
-                                              tab.icon,
-                                              color: selected ? colors.primary : null,
-                                            ),
-                                            Text(
-                                              tab.label,
-                                              style: Theme.of(
-                                                context,
-                                              ).textTheme.labelSmall,
-                                            ),
-                                          ],
-                                        ),
                                       ),
-                                    );
-                                  }).toList(),
+                                    ],
+                                  ),
                                 ),
                               ),
                             ],
-                          ),
-                        );
-                      },
-                    ),
-                  )
-                : null,
-          );
-        },
+                          );
+                        },
+                      ),
+                    )
+                  : null,
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _bottomBarTab(HomeTab tab, HomeTab selectedTab, void Function(HomeTab) changeTab) {
+    final selected = selectedTab == tab;
+    return Expanded(
+      child: InkWell(
+        onTap: () => changeTab(tab),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(tab.icon, size: 18, color: selected ? Theme.of(context).colorScheme.primary : null),
+            Text(tab.label, style: Theme.of(context).textTheme.labelSmall, maxLines: 1),
+          ],
+        ),
       ),
     );
   }
@@ -643,10 +781,26 @@ class _OmniDropBackground extends StatelessWidget {
 
 class _TransferTab extends StatefulWidget {
   final ValueChanged<bool>? onHeaderVisibilityChanged;
-  final bool isActive;
+  final TextEditingController searchController;
+  final bool searchExpanded;
+  final String searchCategory;
+  final BrowserSortMode sortMode;
+  final bool sortAscending;
+  final ValueChanged<String> onCategoryChanged;
+  final ValueChanged<BrowserSortMode> onSortModeChanged;
+  final ValueChanged<bool> onSortDirectionChanged;
+  final TransferPillNotifier transferPillNotifier;
 
   const _TransferTab({
-    required this.isActive,
+    required this.searchController,
+    required this.searchExpanded,
+    required this.searchCategory,
+    required this.sortMode,
+    required this.sortAscending,
+    required this.onCategoryChanged,
+    required this.onSortModeChanged,
+    required this.onSortDirectionChanged,
+    required this.transferPillNotifier,
     this.onHeaderVisibilityChanged,
     super.key,
   });
@@ -655,56 +809,9 @@ class _TransferTab extends StatefulWidget {
   State<_TransferTab> createState() => _TransferTabState();
 }
 
-class _TransferTabState extends State<_TransferTab> with Refena, WidgetsBindingObserver {
-  Timer? _transferActionsTimer;
-  bool _showTransferActions = true;
-
+class _TransferTabState extends State<_TransferTab> with Refena, AutomaticKeepAliveClientMixin {
   @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    if (widget.isActive) _scheduleTransferActionsHide();
-  }
-
-  @override
-  void didUpdateWidget(covariant _TransferTab oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.isActive && !oldWidget.isActive) {
-      setState(() => _showTransferActions = true);
-      _scheduleTransferActionsHide();
-    } else if (!widget.isActive && oldWidget.isActive) {
-      _transferActionsTimer?.cancel();
-    }
-  }
-
-  void _scheduleTransferActionsHide() {
-    _transferActionsTimer?.cancel();
-    _transferActionsTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted) setState(() => _showTransferActions = false);
-    });
-  }
-
-  void _revealTransferActions() {
-    setState(() => _showTransferActions = true);
-    _scheduleTransferActionsHide();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && widget.isActive) {
-      _revealTransferActions();
-    } else {
-      _transferActionsTimer?.cancel();
-    }
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _transferActionsTimer?.cancel();
-    super.dispose();
-  }
-
+  bool get wantKeepAlive => true;
   Future<void> _openSendPairingCard() async {
     if (ref.read(pairingConnectionProvider).isConnected) {
       await _sendToConnectedPeers();
@@ -975,22 +1082,27 @@ class _TransferTabState extends State<_TransferTab> with Refena, WidgetsBindingO
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
+    super.build(context);
     final connection = ref.watch(pairingConnectionProvider);
     final selectedFiles = ref.watch(selectedSendingFilesProvider);
     return Stack(
       children: [
         Positioned.fill(
-          child: Padding(
-            padding: const EdgeInsets.only(bottom: 68),
-            child: SendTab(
-              onHeaderVisibilityChanged: widget.onHeaderVisibilityChanged,
-              onUserActivity: _revealTransferActions,
-              onSendMessage: _openSendPairingCard,
-            ),
+          child: SendTab(
+            onHeaderVisibilityChanged: widget.onHeaderVisibilityChanged,
+            onSendMessage: _openSendPairingCard,
+            searchController: widget.searchController,
+            searchExpanded: widget.searchExpanded,
+            sortMode: widget.sortMode,
+            sortAscending: widget.sortAscending,
+            onCategoryChanged: widget.onCategoryChanged,
+            onSortModeChanged: widget.onSortModeChanged,
+            onSortDirectionChanged: widget.onSortDirectionChanged,
+            transferPillNotifier: widget.transferPillNotifier,
+            onReceive: () => showPairingReceiveCard(context),
           ),
         ),
-        if (connection.isConnected)
+        if (connection.isConnected && selectedFiles.isEmpty)
           Positioned(
             bottom: 10,
             left: 16,
@@ -1007,51 +1119,6 @@ class _TransferTabState extends State<_TransferTab> with Refena, WidgetsBindingO
                         : 'Disconnect · ${connection.peers.length} devices',
                   ),
                 ),
-              ),
-            ),
-          )
-        else if (selectedFiles.isEmpty)
-          Positioned(
-            bottom: 10,
-            left: 16,
-            right: 16,
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 520),
-                child: _showTransferActions
-                    ? Row(
-                        children: [
-                          Expanded(
-                            child: AnimatedPress(
-                              child: FilledButton.icon(
-                                onPressed: _openSendPairingCard,
-                                icon: const Icon(Icons.send),
-                                label: const Text(PairingStrings.send),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: AnimatedPress(
-                              child: FilledButton.tonalIcon(
-                                onPressed: () => showPairingReceiveCard(context),
-                                style: FilledButton.styleFrom(
-                                  backgroundColor: colors.secondaryContainer,
-                                  foregroundColor: colors.onSecondaryContainer,
-                                ),
-                                icon: const Icon(Icons.download),
-                                label: const Text(BrowserStrings.receive),
-                              ),
-                            ),
-                          ),
-                        ],
-                      )
-                    : FloatingActionButton(
-                        heroTag: 'transfer-actions',
-                        tooltip: BrowserStrings.transfer,
-                        onPressed: _revealTransferActions,
-                        child: const OmniDropLogo(size: 26),
-                      ),
               ),
             ),
           ),

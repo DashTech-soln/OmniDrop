@@ -7,6 +7,9 @@ import 'package:localsend_app/pages/device_details_page.dart';
 import 'package:localsend_app/pages/selected_files_page.dart';
 import 'package:localsend_app/pages/tabs/in_app_file_browser.dart';
 import 'package:localsend_app/pages/tabs/send_tab_vm.dart';
+import 'package:localsend_app/pages/browser/browser_sort.dart';
+import 'package:localsend_app/pages/browser/browser_strings.dart';
+import 'package:localsend_app/pages/browser/transfer_pill_notifier.dart';
 import 'package:localsend_app/pages/troubleshoot_page.dart';
 import 'package:localsend_app/provider/animation_provider.dart';
 import 'package:localsend_app/provider/file_transfer_provider.dart';
@@ -40,11 +43,31 @@ class SendTab extends StatelessWidget {
   final ValueChanged<bool>? onHeaderVisibilityChanged;
   final VoidCallback? onUserActivity;
   final Future<void> Function()? onSendMessage;
+  final TextEditingController? searchController;
+  final bool searchExpanded;
+  final ValueChanged<String>? onSearchChanged;
+  final ValueChanged<String>? onCategoryChanged;
+  final BrowserSortMode sortMode;
+  final bool sortAscending;
+  final ValueChanged<BrowserSortMode>? onSortModeChanged;
+  final ValueChanged<bool>? onSortDirectionChanged;
+  final TransferPillNotifier? transferPillNotifier;
+  final VoidCallback? onReceive;
 
   const SendTab({
     this.onHeaderVisibilityChanged,
     this.onUserActivity,
     this.onSendMessage,
+    this.searchController,
+    this.searchExpanded = false,
+    this.onSearchChanged,
+    this.onCategoryChanged,
+    this.sortMode = BrowserSortMode.date,
+    this.sortAscending = false,
+    this.onSortModeChanged,
+    this.onSortDirectionChanged,
+    this.transferPillNotifier,
+    this.onReceive,
   });
 
   @override
@@ -54,10 +77,64 @@ class SendTab extends StatelessWidget {
       init: (context) async => context.global.dispatchAsync(
         SendTabInitAction(context),
       ), // ignore: discarded_futures
-      builder: (context, _) => InAppFileBrowser(
-        onHeaderVisibilityChanged: onHeaderVisibilityChanged,
-        onUserActivity: onUserActivity,
-        onSendMessage: onSendMessage,
+      builder: (context, _) => Stack(
+        children: [
+          InAppFileBrowser(
+            onHeaderVisibilityChanged: onHeaderVisibilityChanged,
+            onUserActivity: onUserActivity,
+            onSendMessage: onSendMessage,
+            searchController: searchController,
+            searchExpanded: searchExpanded,
+            onSearchChanged: onSearchChanged,
+            onCategoryChanged: onCategoryChanged,
+            sortMode: sortMode,
+            sortAscending: sortAscending,
+            onSortModeChanged: onSortModeChanged,
+            onSortDirectionChanged: onSortDirectionChanged,
+          ),
+          if (transferPillNotifier != null)
+            Positioned(
+              bottom: 14,
+              left: 0,
+              right: 0,
+              child: ValueListenableBuilder<bool>(
+                valueListenable: transferPillNotifier!,
+                builder: (context, visible, _) => IgnorePointer(
+                  ignoring: !visible,
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 180),
+                    opacity: visible ? 1 : 0,
+                    child: RepaintBoundary(
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 320),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: FilledButton.icon(
+                                  onPressed: onSendMessage,
+                                  icon: const Icon(Icons.send),
+                                  label: const Text(BrowserStrings.send),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: FilledButton.tonalIcon(
+                                  onPressed: onReceive,
+                                  icon: const Icon(Icons.download),
+                                  label: const Text(BrowserStrings.receive),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:localsend_app/config/theme.dart';
+import 'package:localsend_app/pages/browser/browser_strings.dart';
 import 'package:localsend_app/pages/web_share_page.dart';
 import 'package:localsend_app/pages/receive_history_page.dart';
 import 'package:localsend_app/widget/animated_press.dart';
@@ -120,9 +121,7 @@ class WebDropTab extends StatelessWidget {
                               child: SizedBox(
                                 height: 48,
                                 child: OutlinedButton.icon(
-                                  onPressed: files.isEmpty
-                                      ? null
-                                      : () => ref.redux(selectedSendingFilesProvider).dispatch(ClearSelectionAction()),
+                                  onPressed: files.isEmpty ? null : () => ref.redux(selectedSendingFilesProvider).dispatch(ClearSelectionAction()),
                                   icon: const Icon(Icons.delete_outline),
                                   label: const FittedBox(fit: BoxFit.scaleDown, child: Text('Clear staged files')),
                                 ),
@@ -162,7 +161,8 @@ enum _Platform {
   ios('iOS', Icons.phone_iphone),
   macos('macOS', Icons.laptop_mac),
   windows('Windows', Icons.desktop_windows),
-  linux('Linux', Icons.computer);
+  linux('Linux', Icons.computer)
+  ;
 
   const _Platform(this.label, this.icon);
 
@@ -177,8 +177,7 @@ class OsPairsTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final pairs = [
       for (var left = 0; left < _Platform.values.length; left++)
-        for (var right = left + 1; right < _Platform.values.length; right++)
-          (_Platform.values[left], _Platform.values[right]),
+        for (var right = left + 1; right < _Platform.values.length; right++) (_Platform.values[left], _Platform.values[right]),
     ];
     return ListView(
       padding: const EdgeInsets.all(20),
@@ -269,6 +268,27 @@ class OsPairsTab extends StatelessWidget {
   }
 }
 
+class CloudTab extends StatelessWidget {
+  const CloudTab({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.cloud_outlined, size: 48, color: Theme.of(context).colorScheme.primary),
+            const SizedBox(height: 12),
+            Text(BrowserStrings.cloudSyncComingSoon, textAlign: TextAlign.center),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _PairCountBadge extends StatelessWidget {
   final int count;
 
@@ -334,7 +354,10 @@ class _PairStep extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('$number.', style: TextStyle(color: colors.primary, fontWeight: FontWeight.w700)),
+          Text(
+            '$number.',
+            style: TextStyle(color: colors.primary, fontWeight: FontWeight.w700),
+          ),
           const SizedBox(width: 8),
           Expanded(child: Text(text)),
         ],
