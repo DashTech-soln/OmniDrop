@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:localsend_app/config/init.dart';
 import 'package:localsend_app/config/theme.dart';
 import 'package:localsend_app/gen/strings.g.dart';
+import 'package:localsend_app/pages/browser/browser_strings.dart';
+import 'package:localsend_app/pages/browser/browser_surface.dart';
 import 'package:localsend_app/pages/copy_phone_page.dart';
 import 'package:localsend_app/pages/home_page_controller.dart';
 import 'package:localsend_app/pages/omnidrop_drawer.dart';
@@ -68,25 +70,31 @@ class HomePage extends StatefulWidget {
   /// because the first init clears the cache
   final bool appStart;
 
-  const HomePage({
-    required this.initialTab,
-    required this.appStart,
-    super.key,
-  });
+  const HomePage({required this.initialTab, required this.appStart, super.key});
 
   @override
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> with Refena {
+class _HomePageState extends State<HomePage> with Refena, SingleTickerProviderStateMixin {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _transferTabKey = GlobalKey<_TransferTabState>();
+  late final AnimationController _headerAnimationController;
+  HomeTab? _lastHomeTab;
   bool _dragAndDropIndicator = false;
   bool _expiryNoticeShown = false;
 
   @override
   void initState() {
     super.initState();
+    _headerAnimationController =
+        AnimationController(
+          vsync: this,
+          duration: const Duration(milliseconds: 250),
+          value: 1,
+        )..addListener(() {
+          if (mounted) setState(() {});
+        });
 
     ensureRef((ref) async {
       ref.redux(homePageControllerProvider).dispatch(ChangeTabAction(widget.initialTab));
@@ -94,10 +102,34 @@ class _HomePageState extends State<HomePage> with Refena {
     });
   }
 
+  void _setBrowserHeaderVisible(bool visible) {
+    if (visible) {
+      if (_headerAnimationController.value < 1 && _headerAnimationController.status != AnimationStatus.forward) {
+        _headerAnimationController.forward();
+      }
+    } else if (_headerAnimationController.value > 0 && _headerAnimationController.status != AnimationStatus.reverse) {
+      _headerAnimationController.reverse();
+    }
+  }
+
+  @override
+  void dispose() {
+    _headerAnimationController.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     Translations.of(context); // rebuild on locale change
     final vm = context.watch(homePageControllerProvider);
+    if (_lastHomeTab != vm.currentTab) {
+      _lastHomeTab = vm.currentTab;
+      if (vm.currentTab == HomeTab.send) {
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _setBrowserHeaderVisible(true),
+        );
+      }
+    }
 
     return DropTarget(
       onDragEntered: (_) {
@@ -148,66 +180,94 @@ class _HomePageState extends State<HomePage> with Refena {
                 child: SafeArea(child: const SettingsTab()),
               ),
             ),
-            appBar: AppBar(
-              automaticallyImplyLeading: false,
-              backgroundColor: Colors.transparent,
-              flexibleSpace: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.centerLeft,
-                    end: Alignment.centerRight,
-                    colors: [
-                      colors.primary.withValues(alpha: light ? 0.24 : 0.16),
-                      colors.secondary.withValues(alpha: light ? 0.16 : 0.08),
+            appBar: PreferredSize(
+              preferredSize: Size.fromHeight(
+                kToolbarHeight * _headerAnimationController.value,
+              ),
+              child: ClipRect(
+                child: SizedBox(
+                  height: kToolbarHeight,
+                  child: AppBar(
+                    automaticallyImplyLeading: false,
+                    backgroundColor: Colors.transparent,
+                    flexibleSpace: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.centerLeft,
+                          end: Alignment.centerRight,
+                          colors: [
+                            colors.primary.withValues(
+                              alpha: light ? 0.24 : 0.16,
+                            ),
+                            colors.secondary.withValues(
+                              alpha: light ? 0.16 : 0.08,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    leading: IconButton(
+                      tooltip: 'Open navigation drawer',
+                      onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+                      icon: const Icon(Icons.more_vert),
+                    ),
+                    title: Row(
+                      children: [
+                        const OmniDropLogo(size: 32),
+                        const SizedBox(width: 8),
+                        const Text('OmniDrop'),
+                      ],
+                    ),
+                    actions: [
+                      PopupMenuButton<String>(
+                        tooltip: 'More actions',
+                        icon: const Icon(Icons.menu),
+                        onSelected: (value) async {
+                          if (value == 'scan') {
+                            await showReceivePairingDialog(
+                              context,
+                              allowWebDropLinks: true,
+                            );
+                          } else if (value == 'share') {
+                            final shared = await android_channel.shareInstalledApkAndroid();
+                            if (!shared) await android_channel.shareTextInviteAndroid();
+                          } else {
+                            final started = await Navigator.of(context).push<bool>(
+                              MaterialPageRoute(
+                                builder: (_) => const CopyPhonePage(),
+                              ),
+                            );
+                            if (started == true && context.mounted) {
+                              vm.changeTab(HomeTab.send);
+                              final transferState = _transferTabKey.currentState;
+                              if (transferState != null) await transferState._startSend();
+                            }
+                          }
+                        },
+                        itemBuilder: (context) => const [
+                          PopupMenuItem(
+                            value: 'scan',
+                            child: Text('Scan Connect'),
+                          ),
+                          PopupMenuItem(
+                            value: 'share',
+                            child: Text('Share OmniDrop'),
+                          ),
+                          PopupMenuItem(
+                            value: 'copy',
+                            child: Text('Copy Phone'),
+                          ),
+                        ],
+                      ),
+                      IconButton(
+                        tooltip: 'Settings',
+                        onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
+                        icon: const Icon(Icons.settings_outlined),
+                      ),
                     ],
                   ),
                 ),
               ),
-              leading: IconButton(
-                tooltip: 'Open navigation drawer',
-                onPressed: () => _scaffoldKey.currentState?.openDrawer(),
-                icon: const Icon(Icons.more_vert),
-              ),
-              title: Row(
-                children: [
-                  const OmniDropLogo(size: 32),
-                  const SizedBox(width: 8),
-                  const Text('OmniDrop'),
-                ],
-              ),
-              actions: [
-                PopupMenuButton<String>(
-                  tooltip: 'More actions',
-                  icon: const Icon(Icons.menu),
-                  onSelected: (value) async {
-                    if (value == 'scan') {
-                      await showReceivePairingDialog(context, allowWebDropLinks: true);
-                    } else if (value == 'share') {
-                      final shared = await android_channel.shareInstalledApkAndroid();
-                      if (!shared) await android_channel.shareTextInviteAndroid();
-                    } else {
-                      final started = await Navigator.of(context).push<bool>(
-                        MaterialPageRoute(builder: (_) => const CopyPhonePage()),
-                      );
-                      if (started == true && context.mounted) {
-                        vm.changeTab(HomeTab.send);
-                        final transferState = _transferTabKey.currentState;
-                        if (transferState != null) await transferState._startSend();
-                      }
-                    }
-                  },
-                  itemBuilder: (context) => const [
-                    PopupMenuItem(value: 'scan', child: Text('Scan Connect')),
-                    PopupMenuItem(value: 'share', child: Text('Share OmniDrop')),
-                    PopupMenuItem(value: 'copy', child: Text('Copy Phone')),
-                  ],
-                ),
-                IconButton(
-                  tooltip: 'Settings',
-                  onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
-                  icon: const Icon(Icons.settings_outlined),
-                ),
-              ],
             ),
             body: Stack(
               fit: StackFit.expand,
@@ -239,20 +299,33 @@ class _HomePageState extends State<HomePage> with Refena {
                               children: [
                                 const WebDropTab(),
                                 const OsPairsTab(),
-                                _TransferTab(key: _transferTabKey),
+                                _TransferTab(
+                                  key: _transferTabKey,
+                                  isActive: vm.currentTab == HomeTab.send,
+                                  onHeaderVisibilityChanged: _setBrowserHeaderVisible,
+                                ),
                                 const MeTab(),
                               ],
                             ),
                             if (_dragAndDropIndicator)
                               Container(
                                 width: double.infinity,
-                                decoration: BoxDecoration(color: Theme.of(context).scaffoldBackgroundColor),
+                                decoration: BoxDecoration(
+                                  color: Theme.of(
+                                    context,
+                                  ).scaffoldBackgroundColor,
+                                ),
                                 child: Column(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
                                     const Icon(Icons.file_download, size: 128),
                                     const SizedBox(height: 30),
-                                    Text(t.sendTab.placeItems, style: Theme.of(context).textTheme.titleLarge),
+                                    Text(
+                                      t.sendTab.placeItems,
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.titleLarge,
+                                    ),
                                   ],
                                 ),
                               ),
@@ -270,16 +343,30 @@ class _HomePageState extends State<HomePage> with Refena {
                     child: Consumer(
                       builder: (context, ref) {
                         final pairing = ref.watch(pairingControllerProvider);
+                        final selectedFiles = ref.watch(
+                          selectedSendingFilesProvider,
+                        );
                         final showActivePairing = pairing.role == PairingRole.sender && pairing.sessionToken != null;
                         if (pairing.phase == PairingPhase.stopped && pairing.failureReason == PairingStrings.sessionExpired && !_expiryNoticeShown) {
                           _expiryNoticeShown = true;
                           WidgetsBinding.instance.addPostFrameCallback((_) {
                             if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(PairingStrings.sessionExpired)));
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(PairingStrings.sessionExpired),
+                                ),
+                              );
                             }
                           });
                         } else if (pairing.phase != PairingPhase.stopped) {
                           _expiryNoticeShown = false;
+                        }
+                        if (vm.currentTab == HomeTab.send && selectedFiles.isNotEmpty) {
+                          return _BrowserSelectionToolbar(
+                            count: selectedFiles.length,
+                            onCancel: () => ref.redux(selectedSendingFilesProvider).dispatch(ClearSelectionAction()),
+                            onSend: () => _transferTabKey.currentState?._openSendPairingCard(),
+                          );
                         }
                         return GlassCard(
                           margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
@@ -291,26 +378,44 @@ class _HomePageState extends State<HomePage> with Refena {
                             children: [
                               if (showActivePairing)
                                 Padding(
-                                  padding: const EdgeInsets.fromLTRB(14, 8, 8, 4),
+                                  padding: const EdgeInsets.fromLTRB(
+                                    14,
+                                    8,
+                                    8,
+                                    4,
+                                  ),
                                   child: pairing.peers.isEmpty
                                       ? _PendingPairingPill(
                                           onTap: () => _transferTabKey.currentState?._openSendPairingCard(),
                                         )
                                       : Row(
                                           children: [
-                                            Icon(Icons.wifi_tethering, color: Theme.of(context).colorScheme.tertiary),
+                                            Icon(
+                                              Icons.wifi_tethering,
+                                              color: Theme.of(
+                                                context,
+                                              ).colorScheme.tertiary,
+                                            ),
                                             const SizedBox(width: 8),
                                             Expanded(
                                               child: Text(
                                                 '${PairingStrings.pairActive} - ${pairing.peers.length} ${PairingStrings.devicesCount}',
                                                 maxLines: 1,
                                                 overflow: TextOverflow.ellipsis,
-                                                style: Theme.of(context).textTheme.labelMedium,
+                                                style: Theme.of(
+                                                  context,
+                                                ).textTheme.labelMedium,
                                               ),
                                             ),
                                             TextButton(
-                                              onPressed: () => ref.notifier(pairingControllerProvider).stop(),
-                                              child: const Text(PairingStrings.disconnect),
+                                              onPressed: () => ref
+                                                  .notifier(
+                                                    pairingControllerProvider,
+                                                  )
+                                                  .stop(),
+                                              child: const Text(
+                                                PairingStrings.disconnect,
+                                              ),
                                             ),
                                           ],
                                         ),
@@ -338,8 +443,16 @@ class _HomePageState extends State<HomePage> with Refena {
                                         child: Column(
                                           mainAxisAlignment: MainAxisAlignment.center,
                                           children: [
-                                            Icon(tab.icon, color: selected ? colors.primary : null),
-                                            Text(tab.label, style: Theme.of(context).textTheme.labelSmall),
+                                            Icon(
+                                              tab.icon,
+                                              color: selected ? colors.primary : null,
+                                            ),
+                                            Text(
+                                              tab.label,
+                                              style: Theme.of(
+                                                context,
+                                              ).textTheme.labelSmall,
+                                            ),
                                           ],
                                         ),
                                       ),
@@ -356,6 +469,61 @@ class _HomePageState extends State<HomePage> with Refena {
                 : null,
           );
         },
+      ),
+    );
+  }
+}
+
+class _BrowserSelectionToolbar extends StatelessWidget {
+  final int count;
+  final VoidCallback onCancel;
+  final VoidCallback onSend;
+
+  const _BrowserSelectionToolbar({
+    required this.count,
+    required this.onCancel,
+    required this.onSend,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = BrowserThemeTokens.of(context);
+    return SafeArea(
+      top: false,
+      child: BrowserSurface(
+        margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        borderRadius: BorderRadius.circular(glassRadiusPill),
+        child: Row(
+          children: [
+            IconButton(
+              tooltip: BrowserStrings.clearSelection,
+              onPressed: onCancel,
+              icon: const Icon(Icons.close),
+            ),
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: onSend,
+                icon: const Icon(Icons.send),
+                label: Text(
+                  BrowserStrings.sendCountTemplate.replaceAll(
+                    '{count}',
+                    '$count',
+                  ),
+                ),
+                style: FilledButton.styleFrom(
+                  backgroundColor: tokens.primary,
+                  foregroundColor: Theme.of(context).colorScheme.onPrimary,
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: BrowserStrings.deleteDeferred,
+              onPressed: null,
+              icon: const Icon(Icons.delete_outline),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -403,7 +571,10 @@ class _PendingPairingPillState extends State<_PendingPairingPill> with Refena {
         padding: const EdgeInsets.symmetric(vertical: 6),
         child: Row(
           children: [
-            Icon(Icons.wifi_tethering, color: Theme.of(context).colorScheme.tertiary),
+            Icon(
+              Icons.wifi_tethering,
+              color: Theme.of(context).colorScheme.tertiary,
+            ),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
@@ -471,13 +642,69 @@ class _OmniDropBackground extends StatelessWidget {
 }
 
 class _TransferTab extends StatefulWidget {
-  const _TransferTab({super.key});
+  final ValueChanged<bool>? onHeaderVisibilityChanged;
+  final bool isActive;
+
+  const _TransferTab({
+    required this.isActive,
+    this.onHeaderVisibilityChanged,
+    super.key,
+  });
 
   @override
   State<_TransferTab> createState() => _TransferTabState();
 }
 
-class _TransferTabState extends State<_TransferTab> with Refena {
+class _TransferTabState extends State<_TransferTab> with Refena, WidgetsBindingObserver {
+  Timer? _transferActionsTimer;
+  bool _showTransferActions = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    if (widget.isActive) _scheduleTransferActionsHide();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TransferTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isActive && !oldWidget.isActive) {
+      setState(() => _showTransferActions = true);
+      _scheduleTransferActionsHide();
+    } else if (!widget.isActive && oldWidget.isActive) {
+      _transferActionsTimer?.cancel();
+    }
+  }
+
+  void _scheduleTransferActionsHide() {
+    _transferActionsTimer?.cancel();
+    _transferActionsTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _showTransferActions = false);
+    });
+  }
+
+  void _revealTransferActions() {
+    setState(() => _showTransferActions = true);
+    _scheduleTransferActionsHide();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && widget.isActive) {
+      _revealTransferActions();
+    } else {
+      _transferActionsTimer?.cancel();
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _transferActionsTimer?.cancel();
+    super.dispose();
+  }
+
   Future<void> _openSendPairingCard() async {
     if (ref.read(pairingConnectionProvider).isConnected) {
       await _sendToConnectedPeers();
@@ -529,7 +756,10 @@ class _TransferTabState extends State<_TransferTab> with Refena {
           ),
         );
       } catch (error) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.toString())));
+        if (mounted)
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(error.toString())));
       }
     }());
   }
@@ -539,7 +769,9 @@ class _TransferTabState extends State<_TransferTab> with Refena {
     final activeSendSessions = ref
         .read(sendProvider)
         .values
-        .where((session) => session.status == SessionStatus.waiting || session.status == SessionStatus.sending)
+        .where(
+          (session) => session.status == SessionStatus.waiting || session.status == SessionStatus.sending,
+        )
         .toList();
     final receiving = ref.read(serverProvider)?.session?.status == SessionStatus.sending;
     if (connection.activeTransferCount > 0 || activeSendSessions.isNotEmpty || receiving) {
@@ -548,8 +780,14 @@ class _TransferTabState extends State<_TransferTab> with Refena {
         builder: (context) => AlertDialog(
           title: const Text('A transfer is still in progress'),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Disconnect anyway')),
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Disconnect anyway'),
+            ),
           ],
         ),
       );
@@ -576,7 +814,10 @@ class _TransferTabState extends State<_TransferTab> with Refena {
         builder: (dialogContext, ref) {
           final vm = ref.watch(sendTabVmProvider);
           final nearbyState = ref.watch(nearbyDevicesProvider);
-          final devices = vm.nearbyDevices.toList()..sort((a, b) => a.alias.toLowerCase().compareTo(b.alias.toLowerCase()));
+          final devices = vm.nearbyDevices.toList()
+            ..sort(
+              (a, b) => a.alias.toLowerCase().compareTo(b.alias.toLowerCase()),
+            );
           final isScanning = nearbyState.runningFavoriteScan || nearbyState.runningIps.isNotEmpty;
           final dialogHeight = (MediaQuery.sizeOf(dialogContext).height * 0.72).clamp(180.0, 600.0).toDouble();
 
@@ -600,11 +841,18 @@ class _TransferTabState extends State<_TransferTab> with Refena {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text('Nearby devices', style: Theme.of(dialogContext).textTheme.titleLarge),
+                                  Text(
+                                    'Nearby devices',
+                                    style: Theme.of(
+                                      dialogContext,
+                                    ).textTheme.titleLarge,
+                                  ),
                                   const SizedBox(height: 4),
                                   Text(
                                     'Choose a device on your local network to send the staged files.',
-                                    style: Theme.of(dialogContext).textTheme.bodySmall,
+                                    style: Theme.of(
+                                      dialogContext,
+                                    ).textTheme.bodySmall,
                                   ),
                                 ],
                               ),
@@ -612,14 +860,21 @@ class _TransferTabState extends State<_TransferTab> with Refena {
                             if (isScanning)
                               const Padding(
                                 padding: EdgeInsets.all(12),
-                                child: SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+                                child: SizedBox.square(
+                                  dimension: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                ),
                               )
                             else
                               IconButton(
                                 tooltip: 'Scan again',
                                 onPressed: () async {
                                   dialogContext.redux(nearbyDevicesProvider).dispatch(ClearFoundDevicesAction());
-                                  await dialogContext.global.dispatchAsync(StartSmartScan());
+                                  await dialogContext.global.dispatchAsync(
+                                    StartSmartScan(),
+                                  );
                                 },
                                 icon: const Icon(Icons.refresh),
                               ),
@@ -643,14 +898,22 @@ class _TransferTabState extends State<_TransferTab> with Refena {
                                       Icon(
                                         isScanning ? Icons.wifi_find : Icons.devices_other,
                                         size: 36,
-                                        color: Theme.of(dialogContext).colorScheme.secondary,
+                                        color: Theme.of(
+                                          dialogContext,
+                                        ).colorScheme.secondary,
                                       ),
                                       const SizedBox(height: 12),
-                                      Text(isScanning ? 'Scanning for nearby devices...' : 'No nearby devices found.'),
+                                      Text(
+                                        isScanning ? 'Scanning for nearby devices...' : 'No nearby devices found.',
+                                      ),
                                       const SizedBox(height: 8),
                                       TextButton(
                                         onPressed: () async {
-                                          dialogContext.redux(nearbyDevicesProvider).dispatch(ClearFoundDevicesAction());
+                                          dialogContext
+                                              .redux(nearbyDevicesProvider)
+                                              .dispatch(
+                                                ClearFoundDevicesAction(),
+                                              );
                                           await dialogContext.global.dispatchAsync(StartSmartScan());
                                         },
                                         child: const Text('Scan again'),
@@ -660,14 +923,18 @@ class _TransferTabState extends State<_TransferTab> with Refena {
                                           Navigator.of(dialogContext).pop();
                                           await vm.onTapAddress(context);
                                         },
-                                        child: const Text('Enter device address'),
+                                        child: const Text(
+                                          'Enter device address',
+                                        ),
                                       ),
                                     ],
                                   ),
                                 ),
                               )
                             : ListView.builder(
-                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 8,
+                                ),
                                 itemCount: devices.length,
                                 itemBuilder: (context, index) {
                                   final device = devices[index];
@@ -716,69 +983,77 @@ class _TransferTabState extends State<_TransferTab> with Refena {
         Positioned.fill(
           child: Padding(
             padding: const EdgeInsets.only(bottom: 68),
-            child: const SendTab(),
+            child: SendTab(
+              onHeaderVisibilityChanged: widget.onHeaderVisibilityChanged,
+              onUserActivity: _revealTransferActions,
+            ),
           ),
         ),
-        if (connection.isConnected && selectedFiles.isNotEmpty)
+        if (connection.isConnected)
           Positioned(
-            bottom: 82,
+            bottom: 10,
             left: 16,
             right: 16,
             child: Center(
-              child: FilledButton.icon(
-                onPressed: _sendToConnectedPeers,
-                icon: const Icon(Icons.send),
-                label: Text('Send (${selectedFiles.length})'),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 520),
+                child: FilledButton.tonalIcon(
+                  onPressed: _disconnect,
+                  icon: const Icon(Icons.link_off),
+                  label: Text(
+                    connection.peers.length == 1
+                        ? 'Disconnect · ${connection.peers.single.alias}'
+                        : 'Disconnect · ${connection.peers.length} devices',
+                  ),
+                ),
+              ),
+            ),
+          )
+        else if (selectedFiles.isEmpty)
+          Positioned(
+            bottom: 10,
+            left: 16,
+            right: 16,
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 520),
+                child: _showTransferActions
+                    ? Row(
+                        children: [
+                          Expanded(
+                            child: AnimatedPress(
+                              child: FilledButton.icon(
+                                onPressed: _openSendPairingCard,
+                                icon: const Icon(Icons.send),
+                                label: const Text(PairingStrings.send),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: AnimatedPress(
+                              child: FilledButton.tonalIcon(
+                                onPressed: () => showPairingReceiveCard(context),
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: colors.secondaryContainer,
+                                  foregroundColor: colors.onSecondaryContainer,
+                                ),
+                                icon: const Icon(Icons.download),
+                                label: const Text(BrowserStrings.receive),
+                              ),
+                            ),
+                          ),
+                        ],
+                      )
+                    : FloatingActionButton(
+                        heroTag: 'transfer-actions',
+                        tooltip: BrowserStrings.transfer,
+                        onPressed: _revealTransferActions,
+                        child: const OmniDropLogo(size: 26),
+                      ),
               ),
             ),
           ),
-        Positioned(
-          bottom: 10,
-          left: 16,
-          right: 16,
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 520),
-              child: connection.isConnected
-                  ? FilledButton.tonalIcon(
-                      onPressed: _disconnect,
-                      icon: const Icon(Icons.link_off),
-                      label: Text(
-                        connection.peers.length == 1
-                            ? 'Disconnect · ${connection.peers.single.alias}'
-                            : 'Disconnect · ${connection.peers.length} devices',
-                      ),
-                    )
-                  : Row(
-                      children: [
-                        Expanded(
-                          child: AnimatedPress(
-                            child: FilledButton.icon(
-                              onPressed: _openSendPairingCard,
-                              icon: const Icon(Icons.send),
-                              label: const Text(PairingStrings.send),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: AnimatedPress(
-                            child: FilledButton.tonalIcon(
-                              onPressed: () => showPairingReceiveCard(context),
-                              style: FilledButton.styleFrom(
-                                backgroundColor: colors.secondaryContainer,
-                                foregroundColor: colors.onSecondaryContainer,
-                              ),
-                              icon: const Icon(Icons.download),
-                              label: const Text('Receive'),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-            ),
-          ),
-        ),
       ],
     );
   }
