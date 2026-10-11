@@ -39,8 +39,13 @@ final pickerOptions = FilePickerOption.getOptionsForPlatform();
 class SendTab extends StatelessWidget {
   final ValueChanged<bool>? onHeaderVisibilityChanged;
   final VoidCallback? onUserActivity;
+  final Future<void> Function()? onSendMessage;
 
-  const SendTab({this.onHeaderVisibilityChanged, this.onUserActivity});
+  const SendTab({
+    this.onHeaderVisibilityChanged,
+    this.onUserActivity,
+    this.onSendMessage,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -52,6 +57,7 @@ class SendTab extends StatelessWidget {
       builder: (context, _) => InAppFileBrowser(
         onHeaderVisibilityChanged: onHeaderVisibilityChanged,
         onUserActivity: onUserActivity,
+        onSendMessage: onSendMessage,
       ),
     );
   }

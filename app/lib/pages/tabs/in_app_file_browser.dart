@@ -12,13 +12,16 @@ import 'package:localsend_app/model/cross_file.dart';
 import 'package:localsend_app/provider/apk_provider.dart';
 import 'package:localsend_app/provider/device_info_provider.dart';
 import 'package:localsend_app/provider/param/cached_apk_provider_param.dart';
+import 'package:localsend_app/provider/pairing/pairing_controller.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
 import 'package:localsend_app/util/native/channel/android_channel.dart' as android_channel;
 import 'package:localsend_app/util/native/cross_file_converters.dart';
+import 'package:localsend_app/util/photo_manager_filter.dart';
 import 'package:localsend_isolates/util/file_size_helper.dart';
 import 'package:logging/logging.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:refena_flutter/refena_flutter.dart';
+import 'package:localsend_app/widget/dialogs/message_input_dialog.dart';
 import 'package:wechat_assets_picker/wechat_assets_picker.dart';
 
 enum _BrowserCategory {
@@ -61,10 +64,12 @@ extension on _BrowserCategory {
 class InAppFileBrowser extends StatefulWidget {
   final ValueChanged<bool>? onHeaderVisibilityChanged;
   final VoidCallback? onUserActivity;
+  final Future<void> Function()? onSendMessage;
 
   const InAppFileBrowser({
     this.onHeaderVisibilityChanged,
     this.onUserActivity,
+    this.onSendMessage,
     super.key,
   });
 
@@ -187,6 +192,64 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
   }
 
   bool _matchesSearch(String value) => _searchQuery.isEmpty || value.toLowerCase().contains(_searchQuery);
+
+  void _logPhotoError(String step, Object error, StackTrace stackTrace) {
+    _logger.warning(step, error, stackTrace);
+    ref.notifier(pairingControllerProvider).logUiEvent(step, error.toString());
+  }
+
+  Future<void> _retryPhotoQuery({AssetPathEntity? path}) async {
+    final category = _category;
+    if (path == null) {
+      final future = _loadAssetPaths(category);
+      setState(() {
+        _assetPathsFuture = future;
+        _assetsFuture = null;
+        _additionalAssets.clear();
+        _assetPage = 0;
+        _hasMoreAssets = false;
+      });
+      if (category != _BrowserCategory.images) {
+        setState(() => _assetsFuture = _loadAssets(category));
+      }
+      return;
+    }
+    final future = _loadAssets(category, path: path);
+    setState(() {
+      _assetsFuture = future;
+      _additionalAssets.clear();
+      _assetPage = 0;
+      _hasMoreAssets = false;
+    });
+  }
+
+  Future<void> _composeAndSendMessage() async {
+    final message = await showDialog<String>(
+      context: context,
+      builder: (_) => const MessageInputDialog(),
+    );
+    if (!mounted || message == null || message.trim().isEmpty) return;
+    ref.redux(selectedSendingFilesProvider).dispatch(AddMessageAction(message: message));
+    await widget.onSendMessage?.call();
+  }
+
+  String _displayFileName({
+    String? displayName,
+    String? title,
+    String? path,
+    String? uri,
+  }) {
+    for (final candidate in [displayName, title]) {
+      final value = candidate?.trim();
+      if (value != null && value.isNotEmpty) return value;
+    }
+    final pathName = path?.split(RegExp(r'[/\\]')).last.trim();
+    if (pathName != null && pathName.isNotEmpty) return pathName;
+    final uriSegments = uri == null ? null : Uri.tryParse(uri)?.pathSegments;
+    final uriPath = uriSegments == null || uriSegments.isEmpty ? null : uriSegments.last;
+    final uriName = uriPath?.split('/').last.trim();
+    return uriName == null || uriName.isEmpty ? BrowserStrings.unnamedFile : uriName;
+  }
 
   Future<List<android_channel.FileInfo>> _loadSystemFiles(
     _BrowserCategory category,
@@ -321,34 +384,48 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
       _BrowserCategory.audio => RequestType.audio,
       _ => RequestType.common,
     };
-    final permission = await PhotoManager.requestPermissionExtend(
-      requestOption: PermissionRequestOption(
-        androidPermission: AndroidPermission(type: type, mediaLocation: false),
-      ),
-    );
-    if (!permission.isAuth) {
-      if (mounted && _category == category) setState(() => _permissionRequired = true);
-      return [];
+    try {
+      final permission = await PhotoManager.requestPermissionExtend(
+        requestOption: PermissionRequestOption(
+          androidPermission: AndroidPermission(type: type, mediaLocation: false),
+        ),
+      );
+      if (!permission.isAuth) {
+        if (mounted && _category == category) setState(() => _permissionRequired = true);
+        return [];
+      }
+      if (mounted && _category == category) _permissionRequired = false;
+      return PhotoManager.getAssetPathList(
+        type: type,
+        hasAll: true,
+        filterOption: newestFirstPhotoFilter(),
+      );
+    } catch (error, stackTrace) {
+      _logPhotoError('photo_paths_${category.name}', error, stackTrace);
+      rethrow;
     }
-    if (mounted && _category == category) _permissionRequired = false;
-    return PhotoManager.getAssetPathList(type: type, hasAll: true);
   }
 
   Future<List<AssetEntity>> _loadAssets(
     _BrowserCategory category, {
     AssetPathEntity? path,
   }) async {
-    final paths = path == null ? await (_assetPathsFuture ??= _loadAssetPaths(category)) : [path];
-    if (paths.isEmpty) return [];
-    final selectedPath = path ?? paths.first;
-    final assets = await selectedPath.getAssetListPaged(page: 0, size: 100);
-    if (mounted && _category == category) {
-      _activeAssetPath = selectedPath;
-      _assetPage = 1;
-      _hasMoreAssets = assets.length == 100;
-      _additionalAssets.clear();
+    try {
+      final paths = path == null ? await (_assetPathsFuture ??= _loadAssetPaths(category)) : [path];
+      if (paths.isEmpty) return [];
+      final selectedPath = path ?? paths.first;
+      final assets = await selectedPath.getAssetListPaged(page: 0, size: 100);
+      if (mounted && _category == category) {
+        _activeAssetPath = selectedPath;
+        _assetPage = 1;
+        _hasMoreAssets = assets.length == 100;
+        _additionalAssets.clear();
+      }
+      return assets;
+    } catch (error, stackTrace) {
+      _logPhotoError('photo_assets_${category.name}', error, stackTrace);
+      rethrow;
     }
-    return assets;
   }
 
   Future<void> _loadMoreAssets(
@@ -367,11 +444,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
         _loadingMoreAssets = false;
       });
     } catch (error, stackTrace) {
-      _logger.warning(
-        'Could not load more ${category.name}',
-        error,
-        stackTrace,
-      );
+      _logPhotoError('photo_page_${category.name}', error, stackTrace);
       if (mounted && category == _category) setState(() => _loadingMoreAssets = false);
     }
   }
@@ -405,7 +478,14 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
 
   Future<List<AssetEntity>> _albumCoverFuture(AssetPathEntity path) => _albumCoverFutures.putIfAbsent(
     path.id,
-    () => path.getAssetListPaged(page: 0, size: 1),
+    () async {
+      try {
+        return await path.getAssetListPaged(page: 0, size: 1);
+      } catch (error, stackTrace) {
+        _logPhotoError('photo_album_cover', error, stackTrace);
+        rethrow;
+      }
+    },
   );
 
   Future<void> _toggleApp(Application app) async {
@@ -417,7 +497,13 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
   }
 
   Future<void> _toggleSystemFile(android_channel.FileInfo file) async {
-    await _toggleFile(await CrossFileConverters.convertFileInfo(file));
+    final namedFile = android_channel.FileInfo(
+      name: _displayFileName(displayName: file.name, uri: file.uri),
+      size: file.size,
+      uri: file.uri,
+      lastModified: file.lastModified,
+    );
+    await _toggleFile(await CrossFileConverters.convertFileInfo(namedFile));
   }
 
   Future<void> _toggleFile(CrossFile file) async {
@@ -629,7 +715,12 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
         if (snapshot.hasError) {
           return _emptyState(
             icon: _category.icon,
-            message: '${BrowserStrings.couldNotLoadImages} ${snapshot.error}',
+            message: BrowserStrings.couldNotLoadImages,
+            action: TextButton.icon(
+              onPressed: () => _retryPhotoQuery(),
+              icon: const Icon(Icons.refresh),
+              label: const Text(BrowserStrings.retry),
+            ),
           );
         }
         final albums = snapshot.data ?? [];
@@ -640,6 +731,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
           );
         }
         final photoAlbums = albums.length > 1 ? albums.skip(1).toList() : albums;
+        final activeAlbum = _activeAssetPath ?? albums.first;
         return Column(
           children: [
             Padding(
@@ -667,7 +759,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
               ),
             ),
             Expanded(
-              child: _showAlbums ? _buildAlbumsList(photoAlbums) : _buildPhotosGrid(albums.first),
+              child: _showAlbums ? _buildAlbumsList(photoAlbums) : _buildPhotosGrid(activeAlbum),
             ),
           ],
         );
@@ -814,7 +906,12 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
         if (snapshot.hasError)
           return _emptyState(
             icon: _category.icon,
-            message: '${BrowserStrings.couldNotLoadPhotos} ${snapshot.error}',
+            message: BrowserStrings.couldNotLoadPhotos,
+            action: TextButton.icon(
+              onPressed: () => _retryPhotoQuery(path: album),
+              icon: const Icon(Icons.refresh),
+              label: const Text(BrowserStrings.retry),
+            ),
           );
         final assets = [...?snapshot.data, ..._additionalAssets];
         if (assets.isEmpty)
@@ -940,6 +1037,17 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
       future: future,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) return const Center(child: CircularProgressIndicator());
+        if (snapshot.hasError) {
+          return _emptyState(
+            icon: _category.icon,
+            message: BrowserStrings.couldNotLoadMedia,
+            action: TextButton.icon(
+              onPressed: () => _retryPhotoQuery(),
+              icon: const Icon(Icons.refresh),
+              label: const Text(BrowserStrings.retry),
+            ),
+          );
+        }
         final assets = [...?snapshot.data, ..._additionalAssets];
         if (assets.isEmpty) {
           return _emptyState(
@@ -987,7 +1095,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
                     builder: (context, titleSnapshot) => _fileRow(
                       selected: selected,
                       icon: _category == _BrowserCategory.videos ? Icons.movie_outlined : Icons.audio_file_outlined,
-                      title: titleSnapshot.data ?? (_category == _BrowserCategory.videos ? 'Video file' : 'Audio file'),
+                      title: _displayFileName(title: titleSnapshot.data),
                       subtitle: _category.label,
                       leading: _category == _BrowserCategory.videos
                           ? SizedBox(
@@ -1037,7 +1145,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
     final appsAsync = ref.watch(
       installedApplicationsProvider(
         CachedApkProviderParam(
-          includeSystemApps: false,
+          includeSystemApps: true,
           onlyAppsWithLaunchIntent: false,
           selectMultipleApps: false,
         ),
@@ -1045,121 +1153,166 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
     );
     return appsAsync.when(
       loading: () => const Center(child: CircularProgressIndicator()),
-      error: (error, _) => Center(
-        child: Text('${BrowserStrings.couldNotLoadInstalledApps} $error'),
+      error: (_, _) => _emptyState(
+        icon: Icons.apps_outlined,
+        message: BrowserStrings.couldNotLoadInstalledApps,
       ),
       data: (apps) {
         final matchingApps = apps.where((app) => _matchesSearch('${app.appName} ${app.packageName}')).toList();
-        if (matchingApps.isEmpty) {
-          return _emptyState(
-            icon: Icons.apps_outlined,
-            message: _searchQuery.isEmpty ? BrowserStrings.noUserAppsAvailable : BrowserStrings.noFilesFound,
-          );
-        }
-        return GridView.builder(
+        final localApps = matchingApps.where((app) => !app.systemApp).toList();
+        final systemApps = matchingApps.where((app) => app.systemApp).toList();
+        return CustomScrollView(
           key: const PageStorageKey<String>('browser-apps'),
-          padding: const EdgeInsets.all(4),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 4,
-            mainAxisSpacing: 4,
-            crossAxisSpacing: 4,
-            mainAxisExtent: 138,
-          ),
-          itemCount: matchingApps.length,
-          itemBuilder: (context, index) {
-            final app = matchingApps[index];
-            final selected = _isPathSelected(app.apkFilePath);
-            final tokens = BrowserThemeTokens.of(context);
-            return InkWell(
-              borderRadius: BorderRadius.circular(glassRadiusSmall),
-              onTap: () => _toggleApp(app),
-              child: BrowserSurface(
-                padding: const EdgeInsets.all(6),
-                borderRadius: BorderRadius.circular(glassRadiusSmall),
-                color: selected ? tokens.selection : null,
-                child: Stack(
-                  children: [
-                    Column(
-                      children: [
-                        SizedBox(
-                          height: 58,
-                          child: Center(
-                            child: SizedBox.square(
-                              dimension: 48,
-                              child: app is ApplicationWithIcon
-                                  ? Image.memory(
-                                      app.icon,
-                                      fit: BoxFit.contain,
-                                      cacheWidth: 144,
-                                      cacheHeight: 144,
-                                    )
-                                  : Icon(
-                                      Icons.android,
-                                      size: 42,
-                                      color: tokens.icon,
-                                    ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        SizedBox(
-                          height: 20,
-                          width: double.infinity,
-                          child: Text(
-                            app.appName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            textAlign: TextAlign.center,
-                            style: Theme.of(context).textTheme.labelSmall,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Expanded(
-                          child: Consumer(
-                            builder: (context, ref) {
-                              final size = ref.watch(
-                                apkSizeProvider(app.apkFilePath),
-                              );
-                              return Center(
-                                child: Text(
-                                  size.maybeWhen(
-                                    data: (bytes) => bytes.asReadableFileSize,
-                                    orElse: () => '',
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: Theme.of(context).textTheme.labelSmall?.copyWith(color: tokens.textSecondary),
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (selected)
-                      Positioned(
-                        top: 0,
-                        right: 0,
-                        child: Icon(
-                          Icons.check_circle,
-                          size: 18,
-                          color: tokens.primary,
-                        ),
-                      ),
-                  ],
+          slivers: [
+            _appSectionHeader(BrowserStrings.localApps, localApps.length),
+            _appGrid(localApps),
+            _appSectionHeader(BrowserStrings.systemApps, systemApps.length),
+            _appGrid(systemApps),
+            if (matchingApps.isEmpty)
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: _emptyState(
+                  icon: Icons.apps_outlined,
+                  message: _searchQuery.isEmpty ? BrowserStrings.noApplications : BrowserStrings.noFilesFound,
                 ),
               ),
-            );
-          },
+          ],
         );
       },
+    );
+  }
+
+  SliverPersistentHeader _appSectionHeader(String title, int count) => SliverPersistentHeader(
+    pinned: true,
+    delegate: _AppSectionHeaderDelegate(title: title, count: count),
+  );
+
+  Widget _appGrid(List<Application> apps) => apps.isEmpty
+      ? const SliverToBoxAdapter(child: SizedBox.shrink())
+      : SliverPadding(
+          padding: const EdgeInsets.all(4),
+          sliver: SliverGrid.builder(
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 4,
+              mainAxisSpacing: 4,
+              crossAxisSpacing: 4,
+              childAspectRatio: 0.95,
+            ),
+            itemCount: apps.length,
+            itemBuilder: (context, index) => _appCell(apps[index]),
+          ),
+        );
+
+  Widget _appCell(Application app) {
+    final selected = _isPathSelected(app.apkFilePath);
+    final tokens = BrowserThemeTokens.of(context);
+    final nameStyle = Theme.of(context).textTheme.labelSmall?.copyWith(
+      fontWeight: FontWeight.bold,
+      height: 1,
+    );
+    final sizeStyle = Theme.of(context).textTheme.labelSmall?.copyWith(
+      color: tokens.textSecondary,
+      fontSize: (Theme.of(context).textTheme.labelSmall?.fontSize ?? 11) - 1,
+      height: 1,
+    );
+    return InkWell(
+      borderRadius: BorderRadius.circular(glassRadiusSmall),
+      onTap: () => _toggleApp(app),
+      child: BrowserSurface(
+        padding: EdgeInsets.zero,
+        borderRadius: BorderRadius.circular(glassRadiusSmall),
+        color: selected ? tokens.selection : null,
+        child: Stack(
+          children: [
+            Column(
+              children: [
+                SizedBox(
+                  height: 58,
+                  child: Center(
+                    child: SizedBox.square(
+                      dimension: 48,
+                      child: app is ApplicationWithIcon
+                          ? Image.memory(
+                              app.icon,
+                              fit: BoxFit.contain,
+                              cacheWidth: 144,
+                              cacheHeight: 144,
+                            )
+                          : Icon(Icons.android, size: 42, color: tokens.icon),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  height: 13,
+                  width: double.infinity,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(app.appName, maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, style: nameStyle),
+                  ),
+                ),
+                Consumer(
+                  builder: (context, ref) {
+                    final size = ref.watch(apkSizeProvider(app.apkFilePath));
+                    return SizedBox(
+                      height: 12,
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          size.maybeWhen(data: (bytes) => bytes.asReadableFileSize, orElse: () => ''),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: sizeStyle,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+            if (selected)
+              Positioned(
+                top: 1,
+                right: 1,
+                child: Icon(Icons.check_circle, size: 18, color: tokens.primary),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSayHelloCard() {
+    final tokens = BrowserThemeTokens.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(glassRadiusCard),
+        onTap: _composeAndSendMessage,
+        child: BrowserSurface(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          borderRadius: BorderRadius.circular(glassRadiusCard),
+          child: Row(
+            children: [
+              Icon(Icons.chat_bubble_outline, color: tokens.primary),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  BrowserStrings.sayHello,
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                ),
+              ),
+              Icon(Icons.send_outlined, color: tokens.primary),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
   Widget _buildFilesBrowser({bool textOnly = false}) {
     final folderUri = _currentFolderUri;
     if (folderUri == null) {
-      return _emptyState(
+      final emptyState = _emptyState(
         icon: Icons.folder_open_outlined,
         message: BrowserStrings.filesNoFolder,
         action: FilledButton.icon(
@@ -1181,6 +1334,13 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
           label: const Text(BrowserStrings.grantAccess),
         ),
       );
+      if (!textOnly) return emptyState;
+      return Column(
+        children: [
+          _buildSayHelloCard(),
+          Expanded(child: emptyState),
+        ],
+      );
     }
 
     final future = _treeEntriesFuture ??= android_channel.listFolderTreeAndroid(
@@ -1189,19 +1349,30 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
     return FutureBuilder<List<android_channel.AndroidBrowseEntry>>(
       future: future,
       builder: (context, snapshot) {
-        if (snapshot.connectionState != ConnectionState.done) return const Center(child: CircularProgressIndicator());
-        final entries =
-            [...?snapshot.data]
-                .where(
-                  (entry) => (!textOnly || entry.isDirectory || _isTextFile(entry.name)) && _matchesSearch(entry.name),
+        if (snapshot.connectionState != ConnectionState.done) {
+          return textOnly
+              ? Column(
+                  children: [
+                    _buildSayHelloCard(),
+                    const Expanded(child: Center(child: CircularProgressIndicator())),
+                  ],
                 )
-                .toList()
-              ..sort((a, b) {
-                if (a.isDirectory != b.isDirectory) return a.isDirectory ? -1 : 1;
-                return a.name.toLowerCase().compareTo(b.name.toLowerCase());
-              });
+              : const Center(child: CircularProgressIndicator());
+        }
+        final entries =
+            [...?snapshot.data].where(
+              (entry) {
+                final name = _displayFileName(displayName: entry.name, uri: entry.uri);
+                return (!textOnly || entry.isDirectory || _isTextFile(name)) && _matchesSearch(name);
+              },
+            ).toList()..sort((a, b) {
+              if (a.isDirectory != b.isDirectory) return a.isDirectory ? -1 : 1;
+              final aName = _displayFileName(displayName: a.name, uri: a.uri);
+              final bName = _displayFileName(displayName: b.name, uri: b.uri);
+              return aName.toLowerCase().compareTo(bName.toLowerCase());
+            });
         if (snapshot.hasError) {
-          return _emptyState(
+          final error = _emptyState(
             icon: Icons.folder_off_outlined,
             message: "Couldn't read this folder.\n${snapshot.error}",
             action: TextButton.icon(
@@ -1212,9 +1383,17 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
               label: const Text('Try again'),
             ),
           );
+          if (!textOnly) return error;
+          return Column(
+            children: [
+              _buildSayHelloCard(),
+              Expanded(child: error),
+            ],
+          );
         }
         return Column(
           children: [
+            if (textOnly) _buildSayHelloCard(),
             Row(
               children: [
                 IconButton(
@@ -1287,20 +1466,22 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
                       itemCount: entries.length,
                       itemBuilder: (context, index) {
                         final entry = entries[index];
+                        final name = _displayFileName(displayName: entry.name, uri: entry.uri);
                         final file = android_channel.FileInfo(
-                          name: entry.name,
+                          name: name,
                           size: entry.size,
                           uri: entry.uri,
                           lastModified: entry.lastModified,
                         );
                         return _fileRow(
                           selected: !entry.isDirectory && _isSystemFileSelected(file),
-                          icon: entry.isDirectory ? Icons.folder_outlined : _fileTypeIcon(entry.name),
-                          title: entry.name,
+                          icon: entry.isDirectory ? Icons.folder_outlined : _fileTypeIcon(name),
+                          title: name,
                           subtitle: entry.isDirectory ? BrowserStrings.folder : '${entry.size.asReadableFileSize}${_shortDate(entry.lastModified)}',
+                          isText: textOnly && !entry.isDirectory,
                           onTap: entry.isDirectory
                               ? () => setState(() {
-                                  _treeBreadcrumbs.add((entry.name, entry.uri));
+                                  _treeBreadcrumbs.add((name, entry.uri));
                                   _currentFolderUri = entry.uri;
                                   _treeEntriesFuture = android_channel.listFolderTreeAndroid(uri: entry.uri);
                                 })
@@ -1352,9 +1533,9 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
         final allFiles = [...?snapshot.data, ..._additionalSystemFiles];
         final files = allFiles
             .where(
-              (file) => _category != _BrowserCategory.text || _isTextFile(file.name),
+              (file) => _category != _BrowserCategory.text || _isTextFile(_displayFileName(displayName: file.name, uri: file.uri)),
             )
-            .where((file) => _matchesSearch(file.name))
+            .where((file) => _matchesSearch(_displayFileName(displayName: file.name, uri: file.uri)))
             .toList();
         if (files.isEmpty) {
           return _emptyState(
@@ -1380,10 +1561,11 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
           itemBuilder: (context, index) {
             if (index >= files.length) return _systemFilesFooter(_category);
             final file = files[index];
+            final name = _displayFileName(displayName: file.name, uri: file.uri);
             return _fileRow(
               selected: _isSystemFileSelected(file),
-              icon: _fileTypeIcon(file.name),
-              title: file.name,
+              icon: _fileTypeIcon(name),
+              title: name,
               subtitle: '${file.size.asReadableFileSize}${_shortDate(file.lastModified)}',
               onTap: () => _toggleSystemFile(file),
             );
@@ -1416,7 +1598,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
         final files = [
           ...?snapshot.data,
           ..._additionalSystemFiles,
-        ].where((file) => _matchesSearch(file.name)).toList();
+        ].where((file) => _matchesSearch(_displayFileName(displayName: file.name, uri: file.uri))).toList();
         if (files.isEmpty) {
           return _emptyState(
             icon: _category.icon,
@@ -1445,11 +1627,12 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
           itemBuilder: (context, index) {
             if (index >= files.length) return _systemFilesFooter(_category);
             final file = files[index];
+            final name = _displayFileName(displayName: file.name, uri: file.uri);
             final isVideo = _category == _BrowserCategory.videos;
             return _fileRow(
               selected: _isSystemFileSelected(file),
               icon: isVideo ? Icons.movie_outlined : Icons.audio_file_outlined,
-              title: file.name,
+              title: name,
               subtitle: '${file.size.asReadableFileSize}${_shortDate(file.lastModified)}',
               leading: SizedBox(
                 width: 56,
@@ -1522,16 +1705,17 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
     required String subtitle,
     required VoidCallback onTap,
     Widget? leading,
+    bool isText = false,
   }) {
     final tokens = BrowserThemeTokens.of(context);
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      padding: EdgeInsets.fromLTRB(isText ? 38 : 6, 3, isText ? 10 : 6, 3),
       child: InkWell(
-        borderRadius: BorderRadius.circular(glassRadiusSmall),
+        borderRadius: BorderRadius.circular(isText ? glassRadiusCard : glassRadiusSmall),
         onTap: onTap,
         child: BrowserSurface(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          borderRadius: BorderRadius.circular(glassRadiusSmall),
+          borderRadius: BorderRadius.circular(isText ? glassRadiusCard : glassRadiusSmall),
           color: selected ? tokens.selection : null,
           child: SizedBox(
             height: 60,
@@ -1555,7 +1739,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
                     children: [
                       Text(
                         title,
-                        maxLines: 1,
+                        maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
@@ -1670,6 +1854,34 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena {
       ),
     ),
   );
+}
+
+class _AppSectionHeaderDelegate extends SliverPersistentHeaderDelegate {
+  final String title;
+  final int count;
+
+  const _AppSectionHeaderDelegate({required this.title, required this.count});
+
+  @override
+  double get minExtent => 36;
+
+  @override
+  double get maxExtent => 36;
+
+  @override
+  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
+    return BrowserSurface(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      borderRadius: BorderRadius.zero,
+      child: Text(
+        '$title - $count',
+        style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+      ),
+    );
+  }
+
+  @override
+  bool shouldRebuild(covariant _AppSectionHeaderDelegate oldDelegate) => title != oldDelegate.title || count != oldDelegate.count;
 }
 
 class _StorageStatisticsPlaceholder extends StatelessWidget {

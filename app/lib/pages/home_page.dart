@@ -986,6 +986,7 @@ class _TransferTabState extends State<_TransferTab> with Refena, WidgetsBindingO
             child: SendTab(
               onHeaderVisibilityChanged: widget.onHeaderVisibilityChanged,
               onUserActivity: _revealTransferActions,
+              onSendMessage: _openSendPairingCard,
             ),
           ),
         ),

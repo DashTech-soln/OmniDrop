@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
 import 'package:localsend_app/util/native/channel/android_channel.dart' as android_channel;
 import 'package:localsend_app/util/native/cross_file_converters.dart';
+import 'package:localsend_app/util/photo_manager_filter.dart';
 import 'package:localsend_app/widget/glass/glass_card.dart';
 import 'package:localsend_isolates/util/file_size_helper.dart';
 import 'package:refena_flutter/refena_flutter.dart';
@@ -46,7 +47,10 @@ class _CopyPhonePageState extends State<CopyPhonePage> with Refena {
           requestOption: PermissionRequestOption(androidPermission: AndroidPermission(type: type, mediaLocation: false)),
         );
         if (!permission.isAuth) return [];
-        final albums = await PhotoManager.getAssetPathList(type: type);
+        final albums = await PhotoManager.getAssetPathList(
+          type: type,
+          filterOption: newestFirstPhotoFilter(),
+        );
         if (albums.isEmpty) return [];
         final assets = <AssetEntity>[];
         for (var page = 0; ; page++) {
