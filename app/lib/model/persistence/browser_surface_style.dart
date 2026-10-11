@@ -1,0 +1,1 @@
+enum BrowserSurfaceStyle { clean, glass }

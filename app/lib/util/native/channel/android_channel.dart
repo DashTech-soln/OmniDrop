@@ -81,6 +81,26 @@ Future<List<FileInfo>> queryMediaFilesAndroid({
       .toList();
 }
 
+Future<Map<String, int>> getStorageStatsAndroid() async {
+  final result = await _methodChannel.invokeMethod<Map>('getStorageStats');
+  if (result == null) {
+    throw const FormatException('Android returned no storage statistics.');
+  }
+
+  final stats = <String, int>{};
+  for (final key in const ['total', 'free', 'photos', 'videos', 'audio', 'docs']) {
+    final value = result[key];
+    if (value is! int || value < 0) {
+      throw FormatException('Android returned invalid storage statistics for "$key".');
+    }
+    stats[key] = value;
+  }
+  if (stats['free']! > stats['total']!) {
+    throw const FormatException('Android returned free storage greater than total storage.');
+  }
+  return stats;
+}
+
 Future<Uint8List?> loadMediaThumbnailAndroid({
   required String uri,
   required String category,

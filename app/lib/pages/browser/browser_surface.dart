@@ -1,8 +1,17 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:localsend_app/model/persistence/browser_surface_style.dart';
+import 'package:localsend_app/provider/browser_surface_style_provider.dart';
+import 'package:refena_flutter/refena_flutter.dart';
 
-enum BrowserSurfaceStyle { clean, glass }
+abstract final class BrowserStorageColors {
+  static const photos = Color(0xFF16B89A);
+  static const videos = Color(0xFF3588D4);
+  static const others = Color(0xFF9A82D2);
+  static const audio = Color(0xFFF39B45);
+  static const docs = Color(0xFFE4C542);
+}
 
 class BrowserThemeTokens {
   final Color background;
@@ -57,7 +66,7 @@ class BrowserSurface extends StatelessWidget {
   final EdgeInsetsGeometry padding;
   final EdgeInsetsGeometry margin;
   final BorderRadiusGeometry borderRadius;
-  final BrowserSurfaceStyle style;
+  final BrowserSurfaceStyle? style;
   final Color? color;
 
   const BrowserSurface({
@@ -65,15 +74,16 @@ class BrowserSurface extends StatelessWidget {
     this.padding = const EdgeInsets.all(12),
     this.margin = EdgeInsets.zero,
     this.borderRadius = const BorderRadius.all(Radius.circular(16)),
-    this.style = BrowserSurfaceStyle.clean,
+    this.style,
     this.color,
     super.key,
   });
 
   @override
   Widget build(BuildContext context) {
+    final activeStyle = style ?? context.watch(browserSurfaceStyleProvider);
     final tokens = BrowserThemeTokens.of(context);
-    final surfaceColor = color ?? (style == BrowserSurfaceStyle.clean ? tokens.surface : tokens.surface.withValues(alpha: 0.72));
+    final surfaceColor = color ?? (activeStyle == BrowserSurfaceStyle.clean ? tokens.surface : tokens.surface.withValues(alpha: 0.72));
     final surface = Container(
       margin: margin,
       padding: padding,
@@ -82,13 +92,13 @@ class BrowserSurface extends StatelessWidget {
         borderRadius: borderRadius,
         border: Border.all(
           color: tokens.border.withValues(
-            alpha: style == BrowserSurfaceStyle.clean ? 0.75 : 0.55,
+            alpha: activeStyle == BrowserSurfaceStyle.clean ? 0.75 : 0.55,
           ),
         ),
       ),
       child: child,
     );
-    if (style == BrowserSurfaceStyle.clean) return surface;
+    if (activeStyle == BrowserSurfaceStyle.clean) return surface;
     return ClipRRect(
       borderRadius: borderRadius,
       child: BackdropFilter(

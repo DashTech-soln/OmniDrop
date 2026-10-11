@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:localsend_app/config/theme.dart';
 import 'package:localsend_app/gen/strings.g.dart';
 import 'package:localsend_app/model/persistence/color_mode.dart';
+import 'package:localsend_app/model/persistence/browser_surface_style.dart';
 import 'package:localsend_app/model/persistence/favorite_device.dart';
 import 'package:localsend_app/model/persistence/quick_save_mode.dart';
 import 'package:localsend_app/model/persistence/receive_history_entry.dart';
@@ -72,6 +73,7 @@ const _saveWindowPlacement = 'ls_save_window_placement';
 const _showToken = 'ls_show_token';
 const _aliasKey = 'ls_alias';
 const _themeKey = 'ls_theme'; // now called brightness
+const _browserSurfaceStyleKey = 'od_browser_surface_style';
 const _colorKey = 'ls_color';
 const _customColorKey = 'ls_custom_color'; // RRGGBB hex, used by ColorMode.custom
 const _localeKey = 'ls_locale';
@@ -309,6 +311,15 @@ class PersistenceService {
 
   Future<void> setTheme(ThemeMode theme) async {
     await _prefs.setString(_themeKey, theme.name);
+  }
+
+  BrowserSurfaceStyle getBrowserSurfaceStyle() {
+    final value = _prefs.getString(_browserSurfaceStyleKey);
+    return BrowserSurfaceStyle.values.firstWhereOrNull((style) => style.name == value) ?? BrowserSurfaceStyle.clean;
+  }
+
+  Future<void> setBrowserSurfaceStyle(BrowserSurfaceStyle style) async {
+    await _prefs.setString(_browserSurfaceStyleKey, style.name);
   }
 
   ColorMode getColorMode() {

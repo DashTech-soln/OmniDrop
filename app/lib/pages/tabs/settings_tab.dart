@@ -4,13 +4,16 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:localsend_app/config/theme.dart';
 import 'package:localsend_app/gen/strings.g.dart';
+import 'package:localsend_app/model/persistence/browser_surface_style.dart';
 import 'package:localsend_app/pages/about/about_page.dart';
 import 'package:localsend_app/pages/changelog_page.dart';
 import 'package:localsend_app/pages/donation/donation_page.dart';
 import 'package:localsend_app/pages/pairing/pairing_log_page.dart';
 import 'package:localsend_app/pages/settings/network_interfaces_page.dart';
+import 'package:localsend_app/pages/browser/browser_strings.dart';
 import 'package:localsend_app/pages/tabs/settings_tab_controller.dart';
 import 'package:localsend_app/provider/network/server/server_provider.dart';
+import 'package:localsend_app/provider/browser_surface_style_provider.dart';
 import 'package:localsend_app/provider/settings_provider.dart';
 import 'package:localsend_app/provider/version_provider.dart';
 import 'package:localsend_app/util/alias_generator.dart';
@@ -46,6 +49,7 @@ class SettingsTab extends StatelessWidget {
       provider: (ref) => settingsTabControllerProvider,
       builder: (context, vm) {
         final ref = context.ref;
+        final browserSurfaceStyle = ref.watch(browserSurfaceStyleProvider);
         return ResponsiveListView(
           padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 40),
           children: [
@@ -55,55 +59,55 @@ class SettingsTab extends StatelessWidget {
             ),
             const SizedBox(height: 30),
             if (checkPlatformIsDesktop()) ...[
-                  /// Wayland does window position handling, so there's no need for it. See [https://github.com/localsend/localsend/issues/544]
-                  if (vm.advanced && checkPlatformIsNotWaylandDesktop())
-                    _BooleanEntry(
-                      label: defaultTargetPlatform == TargetPlatform.windows
-                          ? t.settingsTab.general.saveWindowPlacementWindows
-                          : t.settingsTab.general.saveWindowPlacement,
-                      value: vm.settings.saveWindowPlacement,
-                      onChanged: (b) async {
-                        await ref.notifier(settingsProvider).setSaveWindowPlacement(b);
-                      },
+              /// Wayland does window position handling, so there's no need for it. See [https://github.com/localsend/localsend/issues/544]
+              if (vm.advanced && checkPlatformIsNotWaylandDesktop())
+                _BooleanEntry(
+                  label: defaultTargetPlatform == TargetPlatform.windows
+                      ? t.settingsTab.general.saveWindowPlacementWindows
+                      : t.settingsTab.general.saveWindowPlacement,
+                  value: vm.settings.saveWindowPlacement,
+                  onChanged: (b) async {
+                    await ref.notifier(settingsProvider).setSaveWindowPlacement(b);
+                  },
+                ),
+              if (checkPlatformHasTray()) ...[
+                _BooleanEntry(
+                  label: t.settingsTab.general.minimizeToTray,
+                  value: vm.settings.minimizeToTray,
+                  onChanged: (b) async {
+                    await ref.notifier(settingsProvider).setMinimizeToTray(b);
+                  },
+                ),
+              ],
+              if (checkPlatformIsDesktop()) ...[
+                _BooleanEntry(
+                  label: t.settingsTab.general.launchAtStartup,
+                  value: vm.autoStart,
+                  onChanged: (_) => vm.onToggleAutoStart(context),
+                ),
+                Visibility(
+                  visible: vm.autoStart,
+                  maintainAnimation: true,
+                  maintainState: true,
+                  child: AnimatedOpacity(
+                    opacity: vm.autoStart ? 1.0 : 0.0,
+                    duration: const Duration(milliseconds: 500),
+                    child: _BooleanEntry(
+                      label: t.settingsTab.general.launchMinimized,
+                      value: vm.autoStartLaunchHidden,
+                      onChanged: (_) => vm.onToggleAutoStartLaunchHidden(context),
                     ),
-                  if (checkPlatformHasTray()) ...[
-                    _BooleanEntry(
-                      label: t.settingsTab.general.minimizeToTray,
-                      value: vm.settings.minimizeToTray,
-                      onChanged: (b) async {
-                        await ref.notifier(settingsProvider).setMinimizeToTray(b);
-                      },
-                    ),
-                  ],
-                  if (checkPlatformIsDesktop()) ...[
-                    _BooleanEntry(
-                      label: t.settingsTab.general.launchAtStartup,
-                      value: vm.autoStart,
-                      onChanged: (_) => vm.onToggleAutoStart(context),
-                    ),
-                    Visibility(
-                      visible: vm.autoStart,
-                      maintainAnimation: true,
-                      maintainState: true,
-                      child: AnimatedOpacity(
-                        opacity: vm.autoStart ? 1.0 : 0.0,
-                        duration: const Duration(milliseconds: 500),
-                        child: _BooleanEntry(
-                          label: t.settingsTab.general.launchMinimized,
-                          value: vm.autoStartLaunchHidden,
-                          onChanged: (_) => vm.onToggleAutoStartLaunchHidden(context),
-                        ),
-                      ),
-                    ),
-                  ],
-                  if (vm.advanced && checkPlatform([TargetPlatform.windows])) ...[
-                    _BooleanEntry(
-                      label: t.settingsTab.general.showInContextMenu,
-                      value: vm.showInContextMenu,
-                      onChanged: (_) => vm.onToggleShowInContextMenu(context),
-                    ),
-                  ],
-                ],
+                  ),
+                ),
+              ],
+              if (vm.advanced && checkPlatform([TargetPlatform.windows])) ...[
+                _BooleanEntry(
+                  label: t.settingsTab.general.showInContextMenu,
+                  value: vm.showInContextMenu,
+                  onChanged: (_) => vm.onToggleShowInContextMenu(context),
+                ),
+              ],
+            ],
             _SettingsSection(
               title: 'GENERAL',
               children: [
@@ -221,6 +225,30 @@ class SettingsTab extends StatelessWidget {
                   onChanged: (b) async {
                     await ref.notifier(settingsProvider).setSaveToHistory(b);
                   },
+                ),
+              ],
+            ),
+            _SettingsSection(
+              title: BrowserStrings.appearance,
+              children: [
+                _SettingsEntry(
+                  label: BrowserStrings.surfaceStyle,
+                  child: CustomDropdownButton<BrowserSurfaceStyle>(
+                    value: browserSurfaceStyle,
+                    items: [
+                      DropdownMenuItem(
+                        value: BrowserSurfaceStyle.clean,
+                        child: const Text(BrowserStrings.clean),
+                      ),
+                      DropdownMenuItem(
+                        value: BrowserSurfaceStyle.glass,
+                        child: const Text(BrowserStrings.glass),
+                      ),
+                    ],
+                    onChanged: (style) async {
+                      await ref.notifier(browserSurfaceStyleProvider).setStyle(style);
+                    },
+                  ),
                 ),
               ],
             ),
@@ -619,8 +647,15 @@ class _AndroidSaveLocationSettingState extends State<_AndroidSaveLocationSetting
               value: selected,
               isExpanded: true,
               items: [
-                const DropdownMenuItem(value: 'internal', child: Text('Internal storage', overflow: TextOverflow.ellipsis)),
-                if (hasRemovable) const DropdownMenuItem(value: 'sd', child: Text('SD card', overflow: TextOverflow.ellipsis)),
+                const DropdownMenuItem(
+                  value: 'internal',
+                  child: Text('Internal storage', overflow: TextOverflow.ellipsis),
+                ),
+                if (hasRemovable)
+                  const DropdownMenuItem(
+                    value: 'sd',
+                    child: Text('SD card', overflow: TextOverflow.ellipsis),
+                  ),
               ],
               onChanged: (value) {
                 if (value == null || value == selected) return;
@@ -664,6 +699,7 @@ class _SettingsEntry extends StatelessWidget {
     );
   }
 }
+
 /// A specialized version of [_SettingsEntry].
 class _BooleanEntry extends StatelessWidget {
   final String label;
@@ -761,16 +797,16 @@ class _SettingsSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final child = Padding(
-          padding: const EdgeInsets.only(left: 15, right: 15, top: 15),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title, style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 10),
-              ...children,
-            ],
-          ),
-      );
+      padding: const EdgeInsets.only(left: 15, right: 15, top: 15),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 10),
+          ...children,
+        ],
+      ),
+    );
     return security
         ? SecurityGlass(margin: padding, padding: EdgeInsets.zero, child: child)
         : GlassCard(margin: padding, padding: EdgeInsets.zero, child: child);

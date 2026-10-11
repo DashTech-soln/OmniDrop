@@ -9,6 +9,7 @@ import 'package:localsend_app/pages/tabs/in_app_file_browser.dart';
 import 'package:localsend_app/pages/tabs/send_tab_vm.dart';
 import 'package:localsend_app/pages/browser/browser_sort.dart';
 import 'package:localsend_app/pages/browser/browser_strings.dart';
+import 'package:localsend_app/pages/browser/browser_surface.dart';
 import 'package:localsend_app/pages/browser/transfer_pill_notifier.dart';
 import 'package:localsend_app/pages/troubleshoot_page.dart';
 import 'package:localsend_app/provider/animation_provider.dart';
@@ -111,18 +112,46 @@ class SendTab extends StatelessWidget {
                           child: Row(
                             children: [
                               Expanded(
-                                child: FilledButton.icon(
-                                  onPressed: onSendMessage,
-                                  icon: const Icon(Icons.send),
-                                  label: const Text(BrowserStrings.send),
+                                child: BrowserSurface(
+                                  padding: EdgeInsets.zero,
+                                  borderRadius: BorderRadius.circular(glassRadiusPill),
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(glassRadiusPill),
+                                    onTap: onSendMessage,
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                      child: Row(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          const Icon(Icons.send, size: 18),
+                                          const SizedBox(width: 6),
+                                          Text(BrowserStrings.send, style: Theme.of(context).textTheme.labelLarge),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               ),
                               const SizedBox(width: 12),
                               Expanded(
-                                child: FilledButton.tonalIcon(
-                                  onPressed: onReceive,
-                                  icon: const Icon(Icons.download),
-                                  label: const Text(BrowserStrings.receive),
+                                child: BrowserSurface(
+                                  padding: EdgeInsets.zero,
+                                  borderRadius: BorderRadius.circular(glassRadiusPill),
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(glassRadiusPill),
+                                    onTap: onReceive,
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                      child: Row(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          const Icon(Icons.download, size: 18),
+                                          const SizedBox(width: 6),
+                                          Text(BrowserStrings.receive, style: Theme.of(context).textTheme.labelLarge),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               ),
                             ],

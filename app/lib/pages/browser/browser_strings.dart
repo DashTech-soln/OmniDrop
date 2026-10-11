@@ -26,6 +26,7 @@ abstract final class BrowserStrings {
   static const clean = 'Clean';
   static const glass = 'Glass';
   static const surfaceStyle = 'Surface style';
+  static const appearance = 'APPEARANCE';
 
   static String searchHint(String category) => '$searchIn $category...';
   static const clearSearch = 'Clear search';
@@ -50,7 +51,11 @@ abstract final class BrowserStrings {
   static const sayHello = 'Say hello';
   static const unnamedFile = 'Unnamed file';
   static const storage = 'Storage';
-  static const storageStatsNextPhase = 'Storage statistics will be available in a later phase.';
+  static const available = 'Available';
+  static const music = 'Music';
+  static const docs = 'Docs';
+  static const others = 'Others';
+  static const storageStatsError = 'Storage statistics could not be loaded';
   static const filesNoFolder = 'Choose a folder once to grant persistent access to its contents.';
   static const grantAccess = 'Grant access';
   static const openFolder = 'Open folder';

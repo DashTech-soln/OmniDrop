@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:localsend_app/pages/browser/browser_strings.dart';
 import 'package:localsend_app/pages/browser/browser_surface.dart';
 import 'package:localsend_app/pages/browser/browser_sort.dart';
+import 'package:localsend_app/pages/browser/storage_statistics_card.dart';
 import 'package:localsend_app/config/theme.dart';
 import 'package:localsend_app/model/cross_file.dart';
 import 'package:localsend_app/provider/apk_provider.dart';
@@ -868,7 +869,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automa
             child: GestureDetector(
               onHorizontalDragEnd: _onHorizontalSwipe,
               child: BrowserSurface(
-                margin: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                margin: EdgeInsets.fromLTRB(8, 0, 8, _category == _BrowserCategory.files ? 0 : 8),
                 padding: EdgeInsets.zero,
                 borderRadius: BorderRadius.circular(glassRadiusCard),
                 child: RefreshIndicator(
@@ -882,6 +883,10 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automa
             ),
           ),
         ),
+        if (_category == _BrowserCategory.files) ...[
+          const SizedBox(height: 8),
+          StorageStatisticsCard(refreshKey: _reloadCount),
+        ],
       ],
     );
   }
@@ -901,12 +906,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automa
     _BrowserCategory.apps => _buildAppsBrowser(),
     _BrowserCategory.text => _buildFilesBrowser(textOnly: true),
     _BrowserCategory.downloads || _BrowserCategory.documents => _buildSystemFileBrowser(),
-    _BrowserCategory.files => Column(
-      children: [
-        Expanded(child: _buildFilesBrowser()),
-        const _StorageStatisticsPlaceholder(),
-      ],
-    ),
+    _BrowserCategory.files => _buildFilesBrowser(),
   };
 
   Widget _buildImagesBrowser() {
@@ -2103,44 +2103,6 @@ class _AppSectionHeaderDelegate extends SliverPersistentHeaderDelegate {
 
   @override
   bool shouldRebuild(covariant _AppSectionHeaderDelegate oldDelegate) => title != oldDelegate.title || count != oldDelegate.count;
-}
-
-class _StorageStatisticsPlaceholder extends StatelessWidget {
-  const _StorageStatisticsPlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    final tokens = BrowserThemeTokens.of(context);
-    return BrowserSurface(
-      margin: const EdgeInsets.fromLTRB(8, 4, 8, 8),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      child: Row(
-        children: [
-          Icon(Icons.storage_outlined, color: tokens.primary),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  BrowserStrings.storage,
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  BrowserStrings.storageStatsNextPhase,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodySmall?.copyWith(color: tokens.textSecondary),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 class _AlwaysScrollableBrowserBehavior extends MaterialScrollBehavior {
