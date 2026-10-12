@@ -15,6 +15,7 @@ import 'package:localsend_app/pages/browser/browser_sort.dart';
 import 'package:localsend_app/pages/browser/storage_statistics_card.dart';
 import 'package:localsend_app/config/theme.dart';
 import 'package:localsend_app/model/cross_file.dart';
+import 'package:localsend_app/pages/browser/apk_file_cell.dart';
 import 'package:localsend_app/provider/apk_provider.dart';
 import 'package:localsend_app/provider/device_info_provider.dart';
 import 'package:localsend_app/provider/network/send_provider.dart';
@@ -1806,80 +1807,18 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
         );
 
   Widget _apkCell(android_channel.ApkFile apkFile) {
-    final selected = _isPathSelected(apkFile.path);
-    final tokens = BrowserThemeTokens.of(context);
-    final info = _apkInfoFuture(apkFile);
-    return InkWell(
-      borderRadius: BorderRadius.circular(glassRadiusSmall),
-      onTap: () => _toggleApkFile(apkFile),
-      child: BrowserSurface(
-        padding: EdgeInsets.zero,
-        borderRadius: BorderRadius.circular(glassRadiusSmall),
-        color: selected ? tokens.selection : null,
-        child: FutureBuilder<android_channel.ApkInfo?>(
-          future: info,
-          builder: (context, snapshot) {
-            final apkInfo = snapshot.data;
-            final label = apkInfo?.label ?? apkFile.name;
-            final image = apkInfo?.icon;
-            final state = apkInfo?.state;
-            return Stack(
-              children: [
-                Column(
-                  children: [
-                    SizedBox(
-                      height: 58,
-                      child: Center(
-                        child: SizedBox.square(
-                          dimension: 48,
-                          child: image == null
-                              ? Icon(Icons.android, size: 42, color: tokens.icon)
-                              : Image.memory(image, fit: BoxFit.contain, cacheWidth: 144, cacheHeight: 144),
-                        ),
-                      ),
-                    ),
-                    SizedBox(
-                      height: 13,
-                      width: double.infinity,
-                      child: FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center),
-                      ),
-                    ),
-                    SizedBox(
-                      height: 14,
-                      child: switch (state) {
-                        android_channel.ApkInstallState.notInstalled => _apkInstallPill(BrowserStrings.install, apkFile.path),
-                        android_channel.ApkInstallState.update => _apkInstallPill(BrowserStrings.update, apkFile.path),
-                        android_channel.ApkInstallState.installed => Text(
-                          BrowserStrings.installed,
-                          style: Theme.of(context).textTheme.labelSmall?.copyWith(color: tokens.textSecondary),
-                        ),
-                        null => const SizedBox.shrink(),
-                      },
-                    ),
-                  ],
-                ),
-                if (selected) Positioned(top: 1, right: 1, child: Icon(Icons.check_circle, size: 18, color: tokens.primary)),
-              ],
-            );
-          },
-        ),
-      ),
+    return ApkFileCell(
+      file: apkFile,
+      info: _apkInfoFuture(apkFile),
+      selected: _isPathSelected(apkFile.path),
+      onSelect: () {
+        unawaited(_toggleApkFile(apkFile));
+      },
+      onInstall: (path) {
+        unawaited(_installApk(path));
+      },
     );
   }
-
-  Widget _apkInstallPill(String label, String path) => TextButton(
-    onPressed: () {
-      unawaited(_installApk(path));
-    },
-    style: TextButton.styleFrom(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      minimumSize: Size.zero,
-      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-    ),
-    child: Text(label, style: Theme.of(context).textTheme.labelSmall),
-  );
 
   Future<android_channel.ApkInfo?> _apkInfoFuture(android_channel.ApkFile file, {bool refresh = false}) {
     final key = '${file.path}\u0000${file.modified}';
@@ -1932,7 +1871,7 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
       await _launchApkInstaller(path);
     } on android_channel.AndroidStorageException catch (error, stackTrace) {
       _logStorageError('install_apk', error, stackTrace);
-      if (error.code == android_channel.AndroidStorageErrorCode.installNotAllowed) {
+      if (shouldRequestInstallPermission(error)) {
         await _requestApkInstallPermission(path);
       } else {
         _showBrowserMessage(BrowserStrings.storageError(error.code));
