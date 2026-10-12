@@ -129,6 +129,7 @@ private object PairingNativeCrashReport {
 
 class MainActivity : FlutterActivity() {
     private val mediaQueryExecutor = Executors.newFixedThreadPool(2)
+    private val storageTools by lazy { StorageTools(this, mediaQueryExecutor) }
     private var pendingResult: MethodChannel.Result? = null
     private var pendingPermissionResult: MethodChannel.Result? = null
     private var pendingHotspotResult: MethodChannel.Result? = null
@@ -281,6 +282,8 @@ class MainActivity : FlutterActivity() {
             val result = OnceMethodResult(applicationContext, rawResult)
             try {
                 when (call.method) {
+                "getStorageStats", "deleteFiles", "uninstallApp", "findApkFiles", "getApkInfo", "installApk", "canInstallPackages", "openInstallSettings" -> storageTools.handle(call, result)
+
                 "pickDirectory" -> {
                     pendingResult = result
                     openDirectoryPicker(onlyPath = false)
@@ -1400,6 +1403,7 @@ class MainActivity : FlutterActivity() {
     @SuppressLint("WrongConstant")
     @Override
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (storageTools.onActivityResult(requestCode, resultCode)) return
         super.onActivityResult(requestCode, resultCode, data)
         if (resultCode == Activity.RESULT_CANCELED) {
             if (requestCode == REQUEST_CODE_PICK_FOLDER_TREE || requestCode == REQUEST_CODE_PICK_STORAGE_TREE) {
