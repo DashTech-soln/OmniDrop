@@ -41,6 +41,7 @@ const _horizontalPadding = 15.0;
 final pickerOptions = FilePickerOption.getOptionsForPlatform();
 
 class SendTab extends StatelessWidget {
+  final GlobalKey<InAppFileBrowserState>? browserKey;
   final ValueChanged<bool>? onHeaderVisibilityChanged;
   final VoidCallback? onUserActivity;
   final Future<void> Function()? onSendMessage;
@@ -56,6 +57,7 @@ class SendTab extends StatelessWidget {
   final VoidCallback? onReceive;
 
   const SendTab({
+    this.browserKey,
     this.onHeaderVisibilityChanged,
     this.onUserActivity,
     this.onSendMessage,
@@ -81,6 +83,7 @@ class SendTab extends StatelessWidget {
       builder: (context, _) => Stack(
         children: [
           InAppFileBrowser(
+            key: browserKey,
             onHeaderVisibilityChanged: onHeaderVisibilityChanged,
             onUserActivity: onUserActivity,
             onSendMessage: onSendMessage,

@@ -1,12 +1,14 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:device_apps/device_apps.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:localsend_app/model/state/server/receiving_file.dart';
+import 'package:localsend_app/model/state/server/receive_session_state.dart';
 import 'package:localsend_app/pages/browser/browser_strings.dart';
 import 'package:localsend_app/pages/browser/browser_surface.dart';
 import 'package:localsend_app/pages/browser/browser_sort.dart';
@@ -15,7 +17,8 @@ import 'package:localsend_app/config/theme.dart';
 import 'package:localsend_app/model/cross_file.dart';
 import 'package:localsend_app/provider/apk_provider.dart';
 import 'package:localsend_app/provider/device_info_provider.dart';
-import 'package:localsend_app/provider/param/cached_apk_provider_param.dart';
+import 'package:localsend_app/provider/network/send_provider.dart';
+import 'package:localsend_app/provider/network/server/server_provider.dart';
 import 'package:localsend_app/provider/pairing/pairing_controller.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
 import 'package:localsend_app/util/native/channel/android_channel.dart' as android_channel;
@@ -23,10 +26,12 @@ import 'package:localsend_app/util/native/cross_file_converters.dart';
 import 'package:localsend_app/util/photo_manager_filter.dart';
 import 'package:localsend_isolates/util/file_size_helper.dart';
 import 'package:logging/logging.dart';
+import 'package:path/path.dart' as p;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:refena_flutter/refena_flutter.dart';
 import 'package:localsend_app/widget/dialogs/message_input_dialog.dart';
 import 'package:wechat_assets_picker/wechat_assets_picker.dart';
+import 'package:localsend_isolates/model/session_status.dart';
 
 enum _BrowserCategory {
   downloads,
@@ -94,11 +99,12 @@ class InAppFileBrowser extends StatefulWidget {
   });
 
   @override
-  State<InAppFileBrowser> createState() => _InAppFileBrowserState();
+  State<InAppFileBrowser> createState() => InAppFileBrowserState();
 }
 
-class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, AutomaticKeepAliveClientMixin {
+class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
   static const _systemFilesPageSize = 100;
+  static const _selfPackageName = 'com.omnidrop.app';
   _BrowserCategory _category = _BrowserCategory.downloads;
   final _textController = TextEditingController();
   TextEditingController get _searchController => widget.searchController ?? _textController;
@@ -111,6 +117,9 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automa
   final Map<String, Future<int>> _assetCountFutures = {};
   final Map<String, Future<List<AssetEntity>>> _assetSortFutures = {};
   final Map<String, Future<List<Application>>> _appSortFutures = {};
+  final Map<String, Future<android_channel.ApkInfo?>> _apkInfoFutures = {};
+  final Queue<Future<void> Function()> _apkInfoQueue = Queue();
+  final Set<String> _verifiedSafUris = {};
   Timer? _searchDebounce;
   String _searchQuery = '';
   bool _showAlbums = false;
@@ -125,6 +134,11 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automa
   String? _treeRootUri;
   String? _currentFolderUri;
   Future<List<android_channel.AndroidBrowseEntry>>? _treeEntriesFuture;
+  Future<List<Application>>? _installedApplicationsFuture;
+  Future<List<android_channel.ApkFile>>? _apkFilesFuture;
+  Completer<void>? _resumeCompleter;
+  bool _leftForeground = false;
+  int _activeApkInfoLoads = 0;
   int _systemFilesOffset = 0;
   int _assetPage = 0;
   bool _hasMoreSystemFiles = false;
@@ -135,10 +149,12 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automa
   bool _permissionRequired = false;
   String _saveLocation = 'internal';
   int _reloadCount = 0;
+  int _storageRefreshKey = 0;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _searchController.addListener(_handleSearchControllerChanged);
     _systemFilesFuture = Future.value([]);
     if (defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS) {
@@ -169,8 +185,72 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automa
     _searchController.removeListener(_handleSearchControllerChanged);
     if (widget.searchController == null) _textController.dispose();
     _categoryScrollController.dispose();
+    WidgetsBinding.instance.removeObserver(this);
     PhotoManager.removeChangeCallback(_onPhotoManagerChange);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive || state == AppLifecycleState.hidden || state == AppLifecycleState.paused) {
+      _leftForeground = true;
+    } else if (state == AppLifecycleState.resumed && _leftForeground) {
+      _leftForeground = false;
+      final completer = _resumeCompleter;
+      _resumeCompleter = null;
+      if (completer != null && !completer.isCompleted) completer.complete();
+    }
+  }
+
+  Future<void> _waitForResume() {
+    final completer = Completer<void>();
+    _resumeCompleter = completer;
+    _leftForeground = false;
+    return completer.future;
+  }
+
+  void _cancelResumeWait() {
+    final completer = _resumeCompleter;
+    _resumeCompleter = null;
+    if (completer != null && !completer.isCompleted) completer.complete();
+    _leftForeground = false;
+  }
+
+  Future<List<Application>> _loadInstalledApplications() async {
+    try {
+      return await DeviceApps.getInstalledApplications(
+        includeSystemApps: true,
+        onlyAppsWithLaunchIntent: false,
+        includeAppIcons: true,
+      );
+    } catch (error, stackTrace) {
+      _logStorageError('load_installed_apps', error, stackTrace);
+      rethrow;
+    }
+  }
+
+  Future<List<android_channel.ApkFile>> _loadApkFiles() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return [];
+    try {
+      final files = await android_channel.findApkFilesAndroid();
+      files.sort((left, right) => right.modified.compareTo(left.modified));
+      return files.take(500).toList();
+    } catch (error, stackTrace) {
+      _logStorageError('find_apk_files', error, stackTrace);
+      rethrow;
+    }
+  }
+
+  void _refreshStorageStats() {
+    if (mounted) setState(() => _storageRefreshKey++);
+  }
+
+  void _logStorageError(String step, Object error, StackTrace stackTrace) {
+    final technicalDetails = error is android_channel.AndroidStorageException
+        ? '${error.nativeCode}: ${error.technicalMessage ?? ''} ${error.technicalDetails ?? ''}'.trim()
+        : error.toString();
+    _logger.warning(step, error, stackTrace);
+    ref.notifier(pairingControllerProvider).logUiEvent(step, technicalDetails);
   }
 
   Future<void> _startPhotoChangeNotifications() async {
@@ -226,6 +306,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automa
   void _onSearchChanged(String value) {
     widget.onUserActivity?.call();
     _searchDebounce?.cancel();
+    _cancelResumeWait();
     _searchDebounce = Timer(const Duration(milliseconds: 250), () {
       if (!mounted) return;
       setState(() => _searchQuery = value.trim().toLowerCase());
@@ -419,7 +500,10 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automa
         if (uri != null) setState(() => _treeEntriesFuture = android_channel.listFolderTreeAndroid(uri: uri));
         break;
       case _BrowserCategory.apps:
-        setState(() {});
+        setState(() {
+          _installedApplicationsFuture = _loadInstalledApplications();
+          _apkFilesFuture = _loadApkFiles();
+        });
         break;
     }
   }
@@ -757,6 +841,259 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automa
     }
   }
 
+  Future<void> handleDeleteSelection() async {
+    if (defaultTargetPlatform != TargetPlatform.android || !mounted) return;
+    final selection = ref.read(selectedSendingFilesProvider);
+    if (selection.isEmpty) return;
+
+    late final List<Application> installedApps;
+    try {
+      installedApps = await DeviceApps.getInstalledApplications(
+        includeSystemApps: true,
+        onlyAppsWithLaunchIntent: false,
+        includeAppIcons: false,
+      );
+    } catch (error, stackTrace) {
+      _logStorageError('load_installed_apps_for_uninstall', error, stackTrace);
+      _showBrowserMessage(BrowserStrings.uninstallFailed);
+      return;
+    }
+    if (!mounted) return;
+
+    final appsByPath = {for (final app in installedApps) app.apkFilePath: app};
+    final selectedApps = <({CrossFile file, Application app})>[];
+    final files = <CrossFile>[];
+    for (final file in selection) {
+      final app = file.path == null ? null : appsByPath[file.path];
+      if (app == null) {
+        files.add(file);
+      } else {
+        selectedApps.add((file: file, app: app));
+      }
+    }
+
+    final blockedByTransfer = <String>{};
+    for (final file in [...files, ...selectedApps.map((entry) => entry.file)]) {
+      try {
+        final path = await _verifiedPathForTransferCheck(file);
+        if (path != null && _isPathInActiveTransfer(path)) blockedByTransfer.add(path);
+      } catch (error, stackTrace) {
+        _logStorageError('resolve_transfer_path', error, stackTrace);
+      }
+    }
+    if (blockedByTransfer.isNotEmpty) _showBrowserMessage(BrowserStrings.activeTransferDeleteBlocked);
+
+    final restrictedApps = selectedApps.where((entry) {
+      final packageName = entry.app.packageName;
+      return entry.app.systemApp || packageName == _selfPackageName || packageName == '$_selfPackageName.debug';
+    }).toList();
+    final eligibleApps = selectedApps.where((entry) {
+      final packageName = entry.app.packageName;
+      return !entry.app.systemApp &&
+          packageName != _selfPackageName &&
+          packageName != '$_selfPackageName.debug' &&
+          !blockedByTransfer.contains(entry.file.path);
+    }).toList();
+    if (restrictedApps.isNotEmpty) _showBrowserMessage(BrowserStrings.restrictedAppsSkipped);
+
+    if (!mounted) return;
+    if (eligibleApps.isNotEmpty) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          content: Text(BrowserStrings.uninstallAppsConfirmation(eligibleApps.length)),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text(BrowserStrings.cancel)),
+            FilledButton(onPressed: () => Navigator.of(dialogContext).pop(true), child: const Text(BrowserStrings.uninstall)),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      if (confirmed == true) await _uninstallSelectedApps(eligibleApps);
+    }
+
+    final fileCandidates = files.where((file) => file.path == null || !blockedByTransfer.contains(file.path)).toList();
+    if (fileCandidates.isNotEmpty) await _deleteSelectedFiles(fileCandidates);
+  }
+
+  Future<void> _uninstallSelectedApps(List<({CrossFile file, Application app})> apps) async {
+    for (final entry in apps) {
+      if (!mounted) return;
+      final resume = _waitForResume();
+      try {
+        await android_channel.uninstallAppAndroid(packageName: entry.app.packageName);
+        await resume;
+        if (!mounted) return;
+        final installedApps = await DeviceApps.getInstalledApplications(
+          includeSystemApps: true,
+          onlyAppsWithLaunchIntent: false,
+          includeAppIcons: false,
+        );
+        if (installedApps.any((app) => app.packageName == entry.app.packageName)) continue;
+        _removeSelectedPaths({entry.file.path!});
+      } catch (error, stackTrace) {
+        _cancelResumeWait();
+        _logStorageError('uninstall_app', error, stackTrace);
+        _showBrowserMessage(
+          error is android_channel.AndroidStorageException ? BrowserStrings.storageError(error.code) : BrowserStrings.uninstallFailed,
+        );
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _installedApplicationsFuture = _loadInstalledApplications();
+      _reloadCount++;
+    });
+    _refreshStorageStats();
+  }
+
+  Future<void> _deleteSelectedFiles(List<CrossFile> files) async {
+    final sdk = ref.read(deviceInfoProvider).androidSdkInt ?? 0;
+    if (sdk <= 29 && !await Permission.storage.status.then((status) => status.isGranted)) {
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text(BrowserStrings.storageDeletePermissionTitle),
+          content: const Text(BrowserStrings.storageDeletePermissionMessage),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text(BrowserStrings.cancel)),
+            FilledButton(
+              onPressed: () async {
+                Navigator.of(dialogContext).pop();
+                await openAppSettings();
+              },
+              child: const Text(BrowserStrings.openSettings),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    final targets = <({CrossFile file, String path})>[];
+    for (final file in files) {
+      final path = await _verifiedDeletePath(file);
+      if (path != null) targets.add((file: file, path: path));
+    }
+    if (targets.length != files.length) _showBrowserMessage(BrowserStrings.filesCouldNotBeIdentified);
+    if (targets.isEmpty || !mounted) return;
+
+    final totalBytes = targets.fold<int>(0, (sum, target) => sum + target.file.size);
+    final sizeInMb = '${(totalBytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(BrowserStrings.deleteFilesConfirmation(targets.length, sizeInMb)),
+            if (sdk >= 30) ...[
+              const SizedBox(height: 8),
+              const Text(BrowserStrings.androidDeleteConfirmation),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text(BrowserStrings.cancel)),
+          FilledButton(onPressed: () => Navigator.of(dialogContext).pop(true), child: const Text(BrowserStrings.delete)),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) return;
+
+    try {
+      final result = await android_channel.deleteFilesAndroid(paths: targets.map((target) => target.path).toList());
+      if (result.cancelled) return;
+      if (result.deleted.isNotEmpty) {
+        _removeSelectedPaths(result.deleted.toSet());
+        await _reloadAffectedCategories();
+        _refreshStorageStats();
+      }
+      if (result.failed.isNotEmpty) _showBrowserMessage(BrowserStrings.failedDeleteCount(result.failed.length));
+    } catch (error, stackTrace) {
+      _logStorageError('delete_files', error, stackTrace);
+      _showBrowserMessage(
+        error is android_channel.AndroidStorageException ? BrowserStrings.storageError(error.code) : BrowserStrings.storageActionFailed,
+      );
+    }
+  }
+
+  Future<void> _reloadAffectedCategories() async {
+    if (!mounted) return;
+    setState(() {
+      _assetPathsFuture = null;
+      _assetsFuture = null;
+      _additionalAssets.clear();
+      _assetPage = 0;
+      _hasMoreAssets = false;
+      _systemFilesFuture = null;
+      _additionalSystemFiles.clear();
+      _systemFilesOffset = 0;
+      _hasMoreSystemFiles = false;
+      _treeEntriesFuture = _currentFolderUri == null ? null : android_channel.listFolderTreeAndroid(uri: _currentFolderUri!);
+    });
+    await _refreshCurrentCategory();
+  }
+
+  Future<String?> _verifiedDeletePath(CrossFile file) async {
+    if (file.asset != null) {
+      final origin = await file.asset!.originFile;
+      if (origin == null || !p.isAbsolute(origin.path) || !await origin.exists()) return null;
+      return origin.path;
+    }
+    final path = file.path;
+    if (path == null || path.isEmpty) return null;
+    if (path.startsWith('content://')) return _verifiedSafUris.contains(path) ? path : null;
+    final source = File(path);
+    if (!p.isAbsolute(source.path) || !await source.exists()) return null;
+    return path;
+  }
+
+  Future<String?> _verifiedPathForTransferCheck(CrossFile file) async {
+    if (file.asset != null) {
+      final origin = await file.asset!.originFile;
+      return origin?.path;
+    }
+    return file.path;
+  }
+
+  bool _isPathInActiveTransfer(String path) {
+    final sendSessions = ref.read(sendProvider).values;
+    if (sendSessions.any(
+      (session) =>
+          (session.status == SessionStatus.waiting || session.status == SessionStatus.sending) &&
+          session.files.values.any((file) => file.path == path),
+    )) {
+      return true;
+    }
+    final receiveSession = ref.read(serverProvider)?.session;
+    if (receiveSession == null || (receiveSession.status != SessionStatus.waiting && receiveSession.status != SessionStatus.sending)) return false;
+    return receiveSession.files.values.any((file) => _receivingFilePath(receiveSession, file) == path);
+  }
+
+  String? _receivingFilePath(ReceiveSessionState session, ReceivingFile file) {
+    if (file.path != null) return file.path;
+    final desiredName = file.desiredName ?? file.file.fileName;
+    return p.join(session.destinationDirectory, desiredName);
+  }
+
+  void _removeSelectedPaths(Set<String> paths) {
+    final selected = ref.read(selectedSendingFilesProvider);
+    for (var index = selected.length - 1; index >= 0; index--) {
+      if (selected[index].path != null && paths.contains(selected[index].path)) {
+        ref.redux(selectedSendingFilesProvider).dispatch(RemoveSelectedFileAction(index));
+      }
+    }
+  }
+
+  void _showBrowserMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
   bool _isAssetSelected(AssetEntity asset) => ref.read(selectedSendingFilesProvider).any((file) => file.asset?.id == asset.id);
 
   bool _isPathSelected(String path) => ref.read(selectedSendingFilesProvider).any((file) => file.path == path);
@@ -885,7 +1222,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automa
         ),
         if (_category == _BrowserCategory.files) ...[
           const SizedBox(height: 8),
-          StorageStatisticsCard(refreshKey: _reloadCount),
+          StorageStatisticsCard(refreshKey: _storageRefreshKey, onRetry: _refreshStorageStats),
         ],
       ],
     );
@@ -1362,22 +1699,13 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automa
   }
 
   Widget _buildAppsBrowser() {
-    final appsAsync = ref.watch(
-      installedApplicationsProvider(
-        CachedApkProviderParam(
-          includeSystemApps: true,
-          onlyAppsWithLaunchIntent: false,
-          selectMultipleApps: false,
-        ),
-      ),
-    );
-    return appsAsync.when(
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (_, _) => _emptyState(
-        icon: Icons.apps_outlined,
-        message: BrowserStrings.couldNotLoadInstalledApps,
-      ),
-      data: (apps) {
+    final appsFuture = _installedApplicationsFuture ??= _loadInstalledApplications();
+    final apkFilesFuture = _apkFilesFuture ??= _loadApkFiles();
+    return FutureBuilder<List<Application>>(
+      future: appsFuture,
+      builder: (context, appsSnapshot) {
+        if (appsSnapshot.connectionState != ConnectionState.done) return const Center(child: CircularProgressIndicator());
+        final apps = appsSnapshot.data ?? [];
         final matchingApps = apps.where((app) => _matchesSearch('${app.appName} ${app.packageName}')).toList();
         return FutureBuilder<List<Application>>(
           future: _sortedApps(matchingApps),
@@ -1386,22 +1714,53 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automa
             final orderedApps = sortedSnapshot.data ?? matchingApps;
             final orderedLocalApps = orderedApps.where((app) => !app.systemApp).toList();
             final orderedSystemApps = orderedApps.where((app) => app.systemApp).toList();
-            return CustomScrollView(
-              key: const PageStorageKey<String>('browser-apps'),
-              slivers: [
-                _appSectionHeader(BrowserStrings.localApps, orderedLocalApps.length),
-                _appGrid(orderedLocalApps),
-                _appSectionHeader(BrowserStrings.systemApps, orderedSystemApps.length),
-                _appGrid(orderedSystemApps),
-                if (matchingApps.isEmpty)
-                  SliverFillRemaining(
-                    hasScrollBody: false,
-                    child: _emptyState(
-                      icon: Icons.apps_outlined,
-                      message: _searchQuery.isEmpty ? BrowserStrings.noApplications : BrowserStrings.noFilesFound,
-                    ),
-                  ),
-              ],
+            return FutureBuilder<List<android_channel.ApkFile>>(
+              future: apkFilesFuture,
+              builder: (context, apkSnapshot) {
+                final apkFiles = (apkSnapshot.data ?? []).where((file) => _matchesSearch(file.name)).toList();
+                return CustomScrollView(
+                  key: const PageStorageKey<String>('browser-apps'),
+                  slivers: [
+                    _appSectionHeader(BrowserStrings.localApps, orderedLocalApps.length),
+                    _appGrid(orderedLocalApps),
+                    _appSectionHeader(BrowserStrings.systemApps, orderedSystemApps.length),
+                    _appGrid(orderedSystemApps),
+                    if (appsSnapshot.hasError)
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Text(BrowserStrings.couldNotLoadInstalledApps),
+                        ),
+                      ),
+                    if (matchingApps.isEmpty)
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Text(_searchQuery.isEmpty ? BrowserStrings.noApplications : BrowserStrings.noFilesFound),
+                        ),
+                      ),
+                    if (apkSnapshot.connectionState == ConnectionState.done) ...[
+                      _appSectionHeader(BrowserStrings.apkFiles, apkFiles.length),
+                      _apkGrid(apkFiles),
+                      if (apkSnapshot.hasError)
+                        SliverToBoxAdapter(
+                          child: TextButton(
+                            onPressed: () => setState(() => _apkFilesFuture = _loadApkFiles()),
+                            child: const Text(BrowserStrings.couldNotLoadApkFiles),
+                          ),
+                        ),
+                    ] else ...[
+                      _appSectionHeader(BrowserStrings.apkFiles, 0),
+                      const SliverToBoxAdapter(
+                        child: Padding(
+                          padding: EdgeInsets.all(16),
+                          child: Center(child: CircularProgressIndicator()),
+                        ),
+                      ),
+                    ],
+                  ],
+                );
+              },
             );
           },
         );
@@ -1429,6 +1788,222 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automa
             itemBuilder: (context, index) => _appCell(apps[index]),
           ),
         );
+
+  Widget _apkGrid(List<android_channel.ApkFile> files) => files.isEmpty
+      ? const SliverToBoxAdapter(child: SizedBox.shrink())
+      : SliverPadding(
+          padding: const EdgeInsets.all(4),
+          sliver: SliverGrid.builder(
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 4,
+              mainAxisSpacing: 4,
+              crossAxisSpacing: 4,
+              childAspectRatio: 1.0,
+            ),
+            itemCount: files.length,
+            itemBuilder: (context, index) => _apkCell(files[index]),
+          ),
+        );
+
+  Widget _apkCell(android_channel.ApkFile apkFile) {
+    final selected = _isPathSelected(apkFile.path);
+    final tokens = BrowserThemeTokens.of(context);
+    final info = _apkInfoFuture(apkFile);
+    return InkWell(
+      borderRadius: BorderRadius.circular(glassRadiusSmall),
+      onTap: () => _toggleApkFile(apkFile),
+      child: BrowserSurface(
+        padding: EdgeInsets.zero,
+        borderRadius: BorderRadius.circular(glassRadiusSmall),
+        color: selected ? tokens.selection : null,
+        child: FutureBuilder<android_channel.ApkInfo?>(
+          future: info,
+          builder: (context, snapshot) {
+            final apkInfo = snapshot.data;
+            final label = apkInfo?.label ?? apkFile.name;
+            final image = apkInfo?.icon;
+            final state = apkInfo?.state;
+            return Stack(
+              children: [
+                Column(
+                  children: [
+                    SizedBox(
+                      height: 58,
+                      child: Center(
+                        child: SizedBox.square(
+                          dimension: 48,
+                          child: image == null
+                              ? Icon(Icons.android, size: 42, color: tokens.icon)
+                              : Image.memory(image, fit: BoxFit.contain, cacheWidth: 144, cacheHeight: 144),
+                        ),
+                      ),
+                    ),
+                    SizedBox(
+                      height: 13,
+                      width: double.infinity,
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center),
+                      ),
+                    ),
+                    SizedBox(
+                      height: 14,
+                      child: switch (state) {
+                        android_channel.ApkInstallState.notInstalled => _apkInstallPill(BrowserStrings.install, apkFile.path),
+                        android_channel.ApkInstallState.update => _apkInstallPill(BrowserStrings.update, apkFile.path),
+                        android_channel.ApkInstallState.installed => Text(
+                          BrowserStrings.installed,
+                          style: Theme.of(context).textTheme.labelSmall?.copyWith(color: tokens.textSecondary),
+                        ),
+                        null => const SizedBox.shrink(),
+                      },
+                    ),
+                  ],
+                ),
+                if (selected) Positioned(top: 1, right: 1, child: Icon(Icons.check_circle, size: 18, color: tokens.primary)),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _apkInstallPill(String label, String path) => TextButton(
+    onPressed: () {
+      unawaited(_installApk(path));
+    },
+    style: TextButton.styleFrom(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      minimumSize: Size.zero,
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    ),
+    child: Text(label, style: Theme.of(context).textTheme.labelSmall),
+  );
+
+  Future<android_channel.ApkInfo?> _apkInfoFuture(android_channel.ApkFile file, {bool refresh = false}) {
+    final key = '${file.path}\u0000${file.modified}';
+    if (refresh) _apkInfoFutures.remove(key);
+    return _apkInfoFutures.putIfAbsent(key, () {
+      final completer = Completer<android_channel.ApkInfo?>();
+      _apkInfoQueue.add(() async {
+        try {
+          completer.complete(await android_channel.getApkInfoAndroid(path: file.path));
+        } on android_channel.AndroidStorageException catch (error) {
+          if (error.code == android_channel.AndroidStorageErrorCode.notApk) {
+            completer.complete(null);
+          } else {
+            _logStorageError('get_apk_info', error, StackTrace.current);
+            completer.completeError(error);
+          }
+        } catch (error, stackTrace) {
+          _logStorageError('get_apk_info', error, stackTrace);
+          completer.completeError(error, stackTrace);
+        }
+      });
+      _runApkInfoQueue();
+      return completer.future;
+    });
+  }
+
+  void _runApkInfoQueue() {
+    while (_activeApkInfoLoads < 2 && _apkInfoQueue.isNotEmpty) {
+      _activeApkInfoLoads++;
+      unawaited(
+        _apkInfoQueue.removeFirst()().whenComplete(() {
+          _activeApkInfoLoads--;
+          _runApkInfoQueue();
+        }),
+      );
+    }
+  }
+
+  Future<void> _toggleApkFile(android_channel.ApkFile apkFile) async {
+    final file = File(apkFile.path);
+    if (!p.isAbsolute(file.path) || !await file.exists()) {
+      _showBrowserMessage(BrowserStrings.storageErrorNoFile);
+      return;
+    }
+    await _toggleFile(await CrossFileConverters.convertFile(file));
+  }
+
+  Future<void> _installApk(String path) async {
+    try {
+      await _launchApkInstaller(path);
+    } on android_channel.AndroidStorageException catch (error, stackTrace) {
+      _logStorageError('install_apk', error, stackTrace);
+      if (error.code == android_channel.AndroidStorageErrorCode.installNotAllowed) {
+        await _requestApkInstallPermission(path);
+      } else {
+        _showBrowserMessage(BrowserStrings.storageError(error.code));
+      }
+    } catch (error, stackTrace) {
+      _logStorageError('install_apk', error, stackTrace);
+      _showBrowserMessage(BrowserStrings.installApkFailed);
+    }
+  }
+
+  Future<void> _launchApkInstaller(String path) async {
+    final resume = _waitForResume();
+    try {
+      await android_channel.installApkAndroid(path: path);
+      await resume;
+      if (!mounted) return;
+      final files = await (_apkFilesFuture ??= _loadApkFiles()).catchError((_) => <android_channel.ApkFile>[]);
+      android_channel.ApkFile? apkFile;
+      for (final file in files) {
+        if (file.path == path) {
+          apkFile = file;
+          break;
+        }
+      }
+      apkFile ??= android_channel.ApkFile(path: path, name: p.basename(path), size: 0, modified: 0);
+      final infoFuture = _apkInfoFuture(apkFile, refresh: true);
+      try {
+        await infoFuture;
+      } catch (_) {
+        _showBrowserMessage(BrowserStrings.apkInfoUnavailable);
+      }
+      if (!mounted) return;
+      setState(() {
+        _installedApplicationsFuture = _loadInstalledApplications();
+        _reloadCount++;
+      });
+      _refreshStorageStats();
+    } catch (_) {
+      _cancelResumeWait();
+      rethrow;
+    }
+  }
+
+  Future<void> _requestApkInstallPermission(String path) async {
+    final openSettings = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text(BrowserStrings.allowInstallTitle),
+        content: const Text(BrowserStrings.allowInstallMessage),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text(BrowserStrings.notNow)),
+          FilledButton(onPressed: () => Navigator.of(dialogContext).pop(true), child: const Text(BrowserStrings.openSettingsAction)),
+        ],
+      ),
+    );
+    if (!mounted || openSettings != true) return;
+
+    final resume = _waitForResume();
+    try {
+      await android_channel.openInstallSettingsAndroid();
+      await resume;
+      if (!mounted || !await android_channel.canInstallPackagesAndroid()) return;
+      await _launchApkInstaller(path);
+    } catch (error, stackTrace) {
+      _cancelResumeWait();
+      _logStorageError('open_apk_install_settings', error, stackTrace);
+      _showBrowserMessage(
+        error is android_channel.AndroidStorageException ? BrowserStrings.storageError(error.code) : BrowserStrings.installApkFailed,
+      );
+    }
+  }
 
   Widget _appCell(Application app) {
     final selected = _isPathSelected(app.apkFilePath);
@@ -1594,6 +2169,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automa
             },
           ),
         );
+        _verifiedSafUris.addAll(entries.where((entry) => !entry.isDirectory && entry.uri.startsWith('content://')).map((entry) => entry.uri));
         if (snapshot.hasError) {
           final error = _emptyState(
             icon: Icons.folder_off_outlined,
@@ -1720,6 +2296,7 @@ class _InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automa
   }
 
   Future<void> _stageSystemFiles(List<android_channel.FileInfo> files) async {
+    _verifiedSafUris.addAll(files.where((file) => file.uri.startsWith('content://')).map((file) => file.uri));
     await ref
         .redux(selectedSendingFilesProvider)
         .dispatchAsync(

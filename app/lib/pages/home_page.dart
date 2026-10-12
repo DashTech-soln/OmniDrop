@@ -20,6 +20,7 @@ import 'package:localsend_app/pages/tabs/omnidrop_tabs.dart';
 import 'package:localsend_app/pages/tabs/send_tab.dart';
 import 'package:localsend_app/pages/tabs/send_tab_vm.dart';
 import 'package:localsend_app/pages/tabs/settings_tab.dart';
+import 'package:localsend_app/pages/tabs/in_app_file_browser.dart';
 import 'package:localsend_app/pages/transfer/transfer_progress_page.dart';
 import 'package:localsend_app/provider/network/nearby_devices_provider.dart';
 import 'package:localsend_app/provider/network/scan_facade.dart';
@@ -83,6 +84,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> with Refena, SingleTickerProviderStateMixin {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _transferTabKey = GlobalKey<_TransferTabState>();
+  final _browserKey = GlobalKey<InAppFileBrowserState>();
   late final AnimationController _headerAnimationController;
   final _searchController = TextEditingController();
   final _transferPillNotifier = TransferPillNotifier();
@@ -425,6 +427,7 @@ class _HomePageState extends State<HomePage> with Refena, SingleTickerProviderSt
                                   const OsPairsTab(),
                                   _TransferTab(
                                     key: _transferTabKey,
+                                    browserKey: _browserKey,
                                     onHeaderVisibilityChanged: _setBrowserHeaderVisible,
                                     searchController: _searchController,
                                     searchExpanded: _searchExpanded,
@@ -501,6 +504,7 @@ class _HomePageState extends State<HomePage> with Refena, SingleTickerProviderSt
                               count: selectedFiles.length,
                               onCancel: () => ref.redux(selectedSendingFilesProvider).dispatch(ClearSelectionAction()),
                               onSend: () => _transferTabKey.currentState?._openSendPairingCard(),
+                              onDelete: () => _transferTabKey.currentState?._deleteSelected(),
                             );
                           }
                           return Column(
@@ -616,11 +620,13 @@ class _BrowserSelectionToolbar extends StatelessWidget {
   final int count;
   final VoidCallback onCancel;
   final VoidCallback onSend;
+  final VoidCallback onDelete;
 
   const _BrowserSelectionToolbar({
     required this.count,
     required this.onCancel,
     required this.onSend,
+    required this.onDelete,
   });
 
   @override
@@ -656,8 +662,8 @@ class _BrowserSelectionToolbar extends StatelessWidget {
               ),
             ),
             IconButton(
-              tooltip: BrowserStrings.deleteDeferred,
-              onPressed: null,
+              tooltip: BrowserStrings.trash,
+              onPressed: onDelete,
               icon: const Icon(Icons.delete_outline),
             ),
           ],
@@ -780,6 +786,7 @@ class _OmniDropBackground extends StatelessWidget {
 }
 
 class _TransferTab extends StatefulWidget {
+  final GlobalKey<InAppFileBrowserState> browserKey;
   final ValueChanged<bool>? onHeaderVisibilityChanged;
   final TextEditingController searchController;
   final bool searchExpanded;
@@ -792,6 +799,7 @@ class _TransferTab extends StatefulWidget {
   final TransferPillNotifier transferPillNotifier;
 
   const _TransferTab({
+    required this.browserKey,
     required this.searchController,
     required this.searchExpanded,
     required this.searchCategory,
@@ -810,6 +818,10 @@ class _TransferTab extends StatefulWidget {
 }
 
 class _TransferTabState extends State<_TransferTab> with Refena, AutomaticKeepAliveClientMixin {
+  Future<void> _deleteSelected() async {
+    await widget.browserKey.currentState?.handleDeleteSelection();
+  }
+
   @override
   bool get wantKeepAlive => true;
   Future<void> _openSendPairingCard() async {
@@ -1089,6 +1101,7 @@ class _TransferTabState extends State<_TransferTab> with Refena, AutomaticKeepAl
       children: [
         Positioned.fill(
           child: SendTab(
+            browserKey: widget.browserKey,
             onHeaderVisibilityChanged: widget.onHeaderVisibilityChanged,
             onSendMessage: _openSendPairingCard,
             searchController: widget.searchController,

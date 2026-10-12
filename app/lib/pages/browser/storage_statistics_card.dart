@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:localsend_app/config/theme.dart';
 import 'package:localsend_app/pages/browser/browser_strings.dart';
 import 'package:localsend_app/pages/browser/browser_surface.dart';
@@ -9,8 +8,9 @@ import 'package:refena_flutter/refena_flutter.dart';
 
 class StorageStatisticsCard extends StatefulWidget {
   final int refreshKey;
+  final VoidCallback onRetry;
 
-  const StorageStatisticsCard({required this.refreshKey, super.key});
+  const StorageStatisticsCard({required this.refreshKey, required this.onRetry, super.key});
 
   @override
   State<StorageStatisticsCard> createState() => _StorageStatisticsCardState();
@@ -28,17 +28,21 @@ class _StorageStatisticsCardState extends State<StorageStatisticsCard> {
         borderRadius: BorderRadius.circular(glassRadiusCard),
         child: stats.when(
           loading: () => const _LoadingStorageStats(),
-          error: (error, _) => error is MissingPluginException
-              ? const Center(child: Text(BrowserStrings.storageUnavailable))
-              : Center(
-                  child: Text(
-                    BrowserStrings.storageStatsError,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Theme.of(context).colorScheme.error),
-                    textAlign: TextAlign.center,
-                  ),
+          error: (_, _) => Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Text(BrowserStrings.storageUnavailable),
+              TextButton(
+                onPressed: widget.onRetry,
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 ),
+                child: const Text(BrowserStrings.retry),
+              ),
+            ],
+          ),
           data: (value) => _StorageStatsContent(stats: value),
         ),
       ),

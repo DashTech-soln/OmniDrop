@@ -81,8 +81,8 @@ Future<List<FileInfo>> queryMediaFilesAndroid({
       .toList();
 }
 
-Future<Map<String, int>> getStorageStatsAndroid() async {
-  final result = await _methodChannel.invokeMethod<Map>('getStorageStats');
+Future<StorageStats> getStorageStatsAndroid() async {
+  final result = await _invokeStorageToolsMethod<Map>('getStorageStats');
   if (result == null) {
     throw const FormatException('Android returned no storage statistics.');
   }
@@ -98,7 +98,110 @@ Future<Map<String, int>> getStorageStatsAndroid() async {
   if (stats['free']! > stats['total']!) {
     throw const FormatException('Android returned free storage greater than total storage.');
   }
-  return stats;
+  return StorageStats(
+    total: stats['total']!,
+    free: stats['free']!,
+    photos: stats['photos']!,
+    videos: stats['videos']!,
+    audio: stats['audio']!,
+    docs: stats['docs']!,
+  );
+}
+
+Future<DeleteResult> deleteFilesAndroid({required List<String> paths}) async {
+  final result = await _invokeStorageToolsMethod<Map>('deleteFiles', {'paths': paths});
+  if (result == null || result['deleted'] is! List || result['failed'] is! List || result['cancelled'] is! bool) {
+    throw const FormatException('Android returned an invalid file deletion result.');
+  }
+  final deleted = _stringList(result['deleted'] as List, 'deleted');
+  final failed = _stringList(result['failed'] as List, 'failed');
+  return DeleteResult(deleted: deleted, failed: failed, cancelled: result['cancelled'] as bool);
+}
+
+Future<void> uninstallAppAndroid({required String packageName}) async {
+  final result = await _invokeStorageToolsMethod<Map>('uninstallApp', {'package': packageName});
+  if (result?['launched'] != true) {
+    throw const FormatException('Android did not launch the app uninstaller.');
+  }
+}
+
+Future<List<ApkFile>> findApkFilesAndroid() async {
+  final result = await _invokeStorageToolsMethod<List>('findApkFiles');
+  return (result ?? []).map((entry) {
+    if (entry is! Map || entry['path'] is! String || entry['name'] is! String || entry['size'] is! int || entry['modified'] is! int) {
+      throw const FormatException('Android returned an invalid APK file entry.');
+    }
+    final path = entry['path'] as String;
+    final name = entry['name'] as String;
+    final size = entry['size'] as int;
+    final modified = entry['modified'] as int;
+    if (path.isEmpty || name.isEmpty || size < 0 || modified < 0) {
+      throw const FormatException('Android returned an invalid APK file entry.');
+    }
+    return ApkFile(path: path, name: name, size: size, modified: modified);
+  }).toList();
+}
+
+Future<ApkInfo> getApkInfoAndroid({required String path}) async {
+  final result = await _invokeStorageToolsMethod<Map>('getApkInfo', {'path': path});
+  final packageName = result?['package'];
+  final label = result?['label'];
+  final versionName = result?['versionName'];
+  final versionCode = result?['versionCode'];
+  final state = result?['state'];
+  final icon = result?['icon'];
+  if (packageName is! String || label is! String || versionName is! String || versionCode is! int || state is! String) {
+    throw const FormatException('Android returned invalid APK information.');
+  }
+  final installState = ApkInstallState.fromName(state);
+  if (installState == null || (icon != null && icon is! Uint8List)) {
+    throw const FormatException('Android returned invalid APK information.');
+  }
+  return ApkInfo(
+    packageName: packageName,
+    label: label,
+    versionName: versionName,
+    versionCode: versionCode,
+    state: installState,
+    icon: icon as Uint8List?,
+  );
+}
+
+Future<void> installApkAndroid({required String path}) async {
+  final result = await _invokeStorageToolsMethod<Map>('installApk', {'path': path});
+  if (result?['launched'] != true) {
+    throw const FormatException('Android did not launch the package installer.');
+  }
+}
+
+Future<bool> canInstallPackagesAndroid() async {
+  final result = await _invokeStorageToolsMethod<bool>('canInstallPackages');
+  if (result == null) {
+    throw const FormatException('Android returned no package installation permission status.');
+  }
+  return result;
+}
+
+Future<void> openInstallSettingsAndroid() async {
+  final result = await _invokeStorageToolsMethod<bool>('openInstallSettings');
+  if (result != true) {
+    throw const FormatException('Android did not open package installation settings.');
+  }
+}
+
+Future<T?> _invokeStorageToolsMethod<T>(String method, [Object? arguments]) async {
+  try {
+    return await _methodChannel.invokeMethod<T>(method, arguments);
+  } on PlatformException catch (error) {
+    throw AndroidStorageException.fromPlatformException(error);
+  }
+}
+
+List<String> _stringList(List values, String field) {
+  if (values.any((value) => value is! String)) {
+    throw FormatException('Android returned an invalid "$field" file list.');
+  }
+  return values.cast<String>();
 }
 
 Future<Uint8List?> loadMediaThumbnailAndroid({
@@ -367,6 +470,136 @@ class AndroidLocalOnlyHotspot {
     required this.supports5GHz,
     required this.canRequest5GHz,
     required this.hostIp,
+  });
+}
+
+enum AndroidStorageErrorCode {
+  self,
+  systemApp,
+  notInstalled,
+  badArgs,
+  installNotAllowed,
+  noFile,
+  fileNotShareable,
+  notApk,
+  unknown
+  ;
+
+  static AndroidStorageErrorCode fromNativeCode(String code) => switch (code) {
+    'SELF' => self,
+    'SYSTEM_APP' => systemApp,
+    'NOT_INSTALLED' => notInstalled,
+    'BAD_ARGS' => badArgs,
+    'INSTALL_NOT_ALLOWED' => installNotAllowed,
+    'NO_FILE' => noFile,
+    'FILE_NOT_SHAREABLE' => fileNotShareable,
+    'NOT_APK' => notApk,
+    _ => unknown,
+  };
+}
+
+class AndroidStorageException implements Exception {
+  final AndroidStorageErrorCode code;
+  final String nativeCode;
+  final String? technicalMessage;
+  final Object? technicalDetails;
+
+  const AndroidStorageException({
+    required this.code,
+    required this.nativeCode,
+    required this.technicalMessage,
+    required this.technicalDetails,
+  });
+
+  factory AndroidStorageException.fromPlatformException(PlatformException error) => AndroidStorageException(
+    code: AndroidStorageErrorCode.fromNativeCode(error.code),
+    nativeCode: error.code,
+    technicalMessage: error.message,
+    technicalDetails: error.details,
+  );
+
+  @override
+  String toString() => 'AndroidStorageException(${code.name})';
+}
+
+enum ApkInstallState {
+  notInstalled,
+  update,
+  installed
+  ;
+
+  static ApkInstallState? fromName(String value) => switch (value) {
+    'not_installed' => notInstalled,
+    'update' => update,
+    'installed' => installed,
+    _ => null,
+  };
+}
+
+class StorageStats {
+  final int total;
+  final int free;
+  final int photos;
+  final int videos;
+  final int audio;
+  final int docs;
+
+  const StorageStats({
+    required this.total,
+    required this.free,
+    required this.photos,
+    required this.videos,
+    required this.audio,
+    required this.docs,
+  });
+
+  int get others {
+    final remainder = total - free - photos - videos - audio - docs;
+    return remainder < 0 ? 0 : remainder;
+  }
+}
+
+class DeleteResult {
+  final List<String> deleted;
+  final List<String> failed;
+  final bool cancelled;
+
+  const DeleteResult({
+    required this.deleted,
+    required this.failed,
+    required this.cancelled,
+  });
+}
+
+class ApkFile {
+  final String path;
+  final String name;
+  final int size;
+  final int modified;
+
+  const ApkFile({
+    required this.path,
+    required this.name,
+    required this.size,
+    required this.modified,
+  });
+}
+
+class ApkInfo {
+  final String packageName;
+  final String label;
+  final String versionName;
+  final int versionCode;
+  final ApkInstallState state;
+  final Uint8List? icon;
+
+  const ApkInfo({
+    required this.packageName,
+    required this.label,
+    required this.versionName,
+    required this.versionCode,
+    required this.state,
+    required this.icon,
   });
 }
 

@@ -1,3 +1,5 @@
+import 'package:localsend_app/util/native/channel/android_channel.dart' show AndroidStorageErrorCode;
+
 abstract final class BrowserStrings {
   static const downloads = 'DOWNLOADS';
   static const apps = 'APPS';
@@ -21,8 +23,40 @@ abstract final class BrowserStrings {
   static const cloudSyncComingSoon = 'Cloud sync between devices is coming soon';
   static const cloud = 'Cloud';
   static const storageUnavailable = 'Storage details unavailable';
-  static const calculating = 'Calculating...';
+  static const retry = 'Retry';
+  static const storageDeletePermissionTitle = 'Storage permission required';
+  static const storageDeletePermissionMessage = 'Allow storage access in Android settings before deleting these files.';
   static const openSettings = 'Open settings';
+  static const cancel = 'Cancel';
+  static const delete = 'Delete';
+  static const uninstall = 'Uninstall';
+  static const confirmDeleteFiles = 'Delete {count} files ({size})? This cannot be undone.';
+  static const androidDeleteConfirmation = 'Android will ask you to confirm.';
+  static const filesCouldNotBeDeleted = '{count} items could not be deleted';
+  static const filesCouldNotBeIdentified = 'Some selected files could not be safely identified for deletion.';
+  static const activeTransferDeleteBlocked = 'A selected file is part of a running transfer.';
+  static const uninstallApps = 'Uninstall {count} apps?';
+  static const restrictedAppsSkipped = 'System apps and OmniDrop cannot be uninstalled here.';
+  static const uninstallFailed = 'Could not uninstall this app.';
+  static const allowInstallTitle = 'Allow OmniDrop to install apps';
+  static const allowInstallMessage = 'Allow OmniDrop to install apps from this source in Android settings.';
+  static const notNow = 'Not now';
+  static const openSettingsAction = 'Open settings';
+  static const install = 'Install';
+  static const update = 'Update';
+  static const installed = 'Installed';
+  static const apkFiles = 'APK files';
+  static const couldNotLoadApkFiles = 'Could not load APK files. Tap to retry.';
+  static const installFileLocationNotShareable = 'This file location cannot be shared with the installer.';
+  static const installApkFailed = 'Could not install this APK.';
+  static const apkInfoUnavailable = 'Could not refresh this APK status.';
+  static const storageActionFailed = 'Could not complete this storage action.';
+  static const storageErrorSelf = 'OmniDrop cannot uninstall itself.';
+  static const storageErrorSystemApp = 'System apps cannot be uninstalled.';
+  static const storageErrorNotInstalled = 'This app is no longer installed.';
+  static const storageErrorNoFile = 'This file is no longer available.';
+  static const storageErrorBadArgs = 'The requested file or app could not be processed.';
+  static const calculating = 'Calculating...';
   static const clean = 'Clean';
   static const glass = 'Glass';
   static const surfaceStyle = 'Surface style';
@@ -55,7 +89,6 @@ abstract final class BrowserStrings {
   static const music = 'Music';
   static const docs = 'Docs';
   static const others = 'Others';
-  static const storageStatsError = 'Storage statistics could not be loaded';
   static const filesNoFolder = 'Choose a folder once to grant persistent access to its contents.';
   static const grantAccess = 'Grant access';
   static const openFolder = 'Open folder';
@@ -65,7 +98,6 @@ abstract final class BrowserStrings {
   static const folder = 'Folder';
   static const addAllFilesInFolder = 'Add all files in this folder';
   static const noFolderAccessForCategory = 'Open this category to browse device files.';
-  static const retry = 'Retry';
   static const checkAccess = 'Check access';
   static const refresh = 'Refresh';
   static const couldNotLoadCategoryFiles = 'Could not load category files.';
@@ -82,4 +114,19 @@ abstract final class BrowserStrings {
   static const sendCountTemplate = 'SEND({count})';
   static const receive = 'Receive';
   static const transfer = 'Transfer';
+
+  static String deleteFilesConfirmation(int count, String size) => confirmDeleteFiles.replaceAll('{count}', '$count').replaceAll('{size}', size);
+  static String uninstallAppsConfirmation(int count) => uninstallApps.replaceAll('{count}', '$count');
+  static String failedDeleteCount(int count) => filesCouldNotBeDeleted.replaceAll('{count}', '$count');
+  static String storageError(AndroidStorageErrorCode code) => switch (code) {
+    AndroidStorageErrorCode.self => storageErrorSelf,
+    AndroidStorageErrorCode.systemApp => storageErrorSystemApp,
+    AndroidStorageErrorCode.notInstalled => storageErrorNotInstalled,
+    AndroidStorageErrorCode.badArgs => storageErrorBadArgs,
+    AndroidStorageErrorCode.installNotAllowed => allowInstallMessage,
+    AndroidStorageErrorCode.noFile => storageErrorNoFile,
+    AndroidStorageErrorCode.fileNotShareable => installFileLocationNotShareable,
+    AndroidStorageErrorCode.notApk => storageActionFailed,
+    AndroidStorageErrorCode.unknown => storageActionFailed,
+  };
 }
