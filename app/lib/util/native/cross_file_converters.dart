@@ -63,9 +63,9 @@ class CrossFileConverters {
     );
   }
 
-  static Future<CrossFile> convertFileInfo(android_channel.FileInfo file) async {
+  static Future<CrossFile> convertFileInfo(android_channel.FileInfo file, {String? name}) async {
     return CrossFile(
-      name: file.name,
+      name: name ?? file.name,
       fileType: file.name.guessFileType(),
       size: file.size,
       thumbnail: null,

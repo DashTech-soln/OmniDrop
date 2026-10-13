@@ -30,12 +30,13 @@ abstract final class BrowserStrings {
   static const cancel = 'Cancel';
   static const delete = 'Delete';
   static const uninstall = 'Uninstall';
-  static const confirmDeleteFiles = 'Delete {count} files ({size})? This cannot be undone.';
+  static const confirmDeleteFiles = 'Are you sure you want to delete {count} files ({size})? This cannot be undone.';
+  static const confirmDeleteFolder = 'Are you sure you want to delete the folder "{name}" and everything inside it? This cannot be undone.';
   static const androidDeleteConfirmation = 'Android will ask you to confirm.';
   static const filesCouldNotBeDeleted = '{count} items could not be deleted';
   static const filesCouldNotBeIdentified = 'Some selected files could not be safely identified for deletion.';
   static const activeTransferDeleteBlocked = 'A selected file is part of a running transfer.';
-  static const uninstallApps = 'Uninstall {count} apps?';
+  static const uninstallApps = 'Are you sure you want to uninstall {count} apps?';
   static const restrictedAppsSkipped = 'System apps and OmniDrop cannot be uninstalled here.';
   static const uninstallFailed = 'Could not uninstall this app.';
   static const allowInstallTitle = 'Allow OmniDrop to install apps';
@@ -74,6 +75,8 @@ abstract final class BrowserStrings {
   static const couldNotLoadMedia = 'Could not load media.';
   static const noMediaFoundOrAccess = 'No media found or access was not granted.';
   static const mediaPermissionRequired = 'Allow media access to browse files in this category.';
+  static const storagePermissionRequired = 'Allow access to browse files on this device.';
+  static const allowAccess = 'Allow access';
   static const photos = 'Photos';
   static const albums = 'Albums';
   static const noAlbums = 'No albums found.';
@@ -116,6 +119,7 @@ abstract final class BrowserStrings {
   static const transfer = 'Transfer';
 
   static String deleteFilesConfirmation(int count, String size) => confirmDeleteFiles.replaceAll('{count}', '$count').replaceAll('{size}', size);
+  static String deleteFolderConfirmation(String name) => confirmDeleteFolder.replaceAll('{name}', name);
   static String uninstallAppsConfirmation(int count) => uninstallApps.replaceAll('{count}', '$count');
   static String failedDeleteCount(int count) => filesCouldNotBeDeleted.replaceAll('{count}', '$count');
   static String storageError(AndroidStorageErrorCode code) => switch (code) {

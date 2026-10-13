@@ -9,6 +9,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:localsend_app/model/state/server/receiving_file.dart';
 import 'package:localsend_app/model/state/server/receive_session_state.dart';
+import 'package:localsend_app/pages/browser/browser_delete_helpers.dart';
 import 'package:localsend_app/pages/browser/browser_strings.dart';
 import 'package:localsend_app/pages/browser/browser_surface.dart';
 import 'package:localsend_app/pages/browser/browser_sort.dart';
@@ -25,6 +26,7 @@ import 'package:localsend_app/provider/selection/selected_sending_files_provider
 import 'package:localsend_app/util/native/channel/android_channel.dart' as android_channel;
 import 'package:localsend_app/util/native/cross_file_converters.dart';
 import 'package:localsend_app/util/photo_manager_filter.dart';
+import 'package:localsend_isolates/model/file_type.dart';
 import 'package:localsend_isolates/util/file_size_helper.dart';
 import 'package:logging/logging.dart';
 import 'package:path/path.dart' as p;
@@ -131,6 +133,10 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
   final Map<String, Future<Uint8List?>> _thumbnailFutures = {};
   final List<android_channel.FileInfo> _additionalSystemFiles = [];
   final List<AssetEntity> _additionalAssets = [];
+  final Set<String> _deletedAssetIds = {};
+  final Set<String> _scheduledMissingAssetIds = {};
+  final Set<String> _selectedFolderUris = {};
+  final Map<String, String> _selectedFolderNames = {};
   final List<(String, String)> _treeBreadcrumbs = [];
   String? _treeRootUri;
   String? _currentFolderUri;
@@ -148,6 +154,9 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
   bool _loadingMoreSystemFiles = false;
   bool _systemFilesPageError = false;
   bool _permissionRequired = false;
+  bool _permissionPermanentlyDenied = false;
+  bool _permissionRequestAttempted = false;
+  Future<bool>? _permissionRequest;
   String _saveLocation = 'internal';
   int _reloadCount = 0;
   int _storageRefreshKey = 0;
@@ -200,7 +209,101 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
       final completer = _resumeCompleter;
       _resumeCompleter = null;
       if (completer != null && !completer.isCompleted) completer.complete();
+      unawaited(_checkPermissionOnResume());
     }
+  }
+
+  Future<void> _checkPermissionOnResume() async {
+    final granted = await _hasBrowsePermission();
+    if (!mounted) return;
+    if (granted) {
+      if (_permissionRequired) {
+        setState(() {
+          _permissionRequired = false;
+          _permissionPermanentlyDenied = false;
+        });
+      }
+      await _refreshCurrentCategory();
+    }
+  }
+
+  Future<bool> _hasBrowsePermission() async {
+    if (defaultTargetPlatform != TargetPlatform.android && defaultTargetPlatform != TargetPlatform.iOS) return true;
+    if (defaultTargetPlatform == TargetPlatform.android && (ref.read(deviceInfoProvider).androidSdkInt ?? 0) <= 32) {
+      final status = await Permission.storage.status;
+      _permissionPermanentlyDenied = status.isPermanentlyDenied;
+      return status.isGranted;
+    }
+    final state = await PhotoManager.getPermissionState(
+      requestOption: const PermissionRequestOption(
+        androidPermission: AndroidPermission(type: RequestType.common, mediaLocation: false),
+      ),
+    );
+    if (!state.hasAccess) {
+      final statuses = defaultTargetPlatform == TargetPlatform.android
+          ? await Future.wait([Permission.photos.status, Permission.videos.status, Permission.audio.status])
+          : [await Permission.photos.status];
+      _permissionPermanentlyDenied = statuses.any((status) => status.isPermanentlyDenied) || state == PermissionState.restricted;
+    } else {
+      _permissionPermanentlyDenied = false;
+    }
+    return state.hasAccess;
+  }
+
+  Future<bool> _ensureBrowsePermission({bool requestIfNeeded = false, bool explicitRequest = false}) async {
+    if (await _hasBrowsePermission()) {
+      if (mounted && _permissionRequired) {
+        setState(() {
+          _permissionRequired = false;
+          _permissionPermanentlyDenied = false;
+        });
+      }
+      return true;
+    }
+    if (!requestIfNeeded || (_permissionRequestAttempted && !explicitRequest)) {
+      if (mounted) setState(() => _permissionRequired = true);
+      return false;
+    }
+    final activeRequest = _permissionRequest;
+    if (activeRequest != null) return activeRequest;
+
+    _permissionRequestAttempted = true;
+    final request = _requestBrowsePermission();
+    _permissionRequest = request;
+    try {
+      final granted = await request;
+      if (mounted) {
+        setState(() {
+          _permissionRequired = !granted;
+          _permissionPermanentlyDenied = !granted && _permissionPermanentlyDenied;
+        });
+      }
+      return granted;
+    } finally {
+      if (identical(_permissionRequest, request)) _permissionRequest = null;
+    }
+  }
+
+  Future<bool> _requestBrowsePermission() async {
+    if (defaultTargetPlatform == TargetPlatform.android && (ref.read(deviceInfoProvider).androidSdkInt ?? 0) <= 32) {
+      final status = await Permission.storage.request();
+      _permissionPermanentlyDenied = status.isPermanentlyDenied;
+      return status.isGranted;
+    }
+    final state = await PhotoManager.requestPermissionExtend(
+      requestOption: const PermissionRequestOption(
+        androidPermission: AndroidPermission(type: RequestType.common, mediaLocation: false),
+      ),
+    );
+    if (!state.hasAccess) {
+      final statuses = defaultTargetPlatform == TargetPlatform.android
+          ? await Future.wait([Permission.photos.status, Permission.videos.status, Permission.audio.status])
+          : [await Permission.photos.status];
+      _permissionPermanentlyDenied = statuses.any((status) => status.isPermanentlyDenied) || state == PermissionState.restricted;
+    } else {
+      _permissionPermanentlyDenied = false;
+    }
+    return state.hasAccess;
   }
 
   Future<void> _waitForResume() {
@@ -263,13 +366,17 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
   }
 
   void _onPhotoManagerChange(MethodCall _) {
-    final relevantOnPlatform =
-        _category == _BrowserCategory.images ||
-        (defaultTargetPlatform != TargetPlatform.android && const {_BrowserCategory.videos, _BrowserCategory.audio}.contains(_category));
-    if (!mounted || !relevantOnPlatform) {
-      return;
+    if (!mounted || !const {_BrowserCategory.images, _BrowserCategory.videos, _BrowserCategory.audio}.contains(_category)) return;
+    unawaited(_refreshAfterPhotoChange());
+  }
+
+  Future<void> _refreshAfterPhotoChange() async {
+    try {
+      await PhotoManager.clearFileCache();
+    } catch (error, stackTrace) {
+      _logPhotoError('clear_changed_photo_cache', error, stackTrace);
     }
-    unawaited(_refreshCurrentCategory());
+    if (mounted) await _refreshCurrentCategory();
   }
 
   void _handleSearchControllerChanged() => _onSearchChanged(_searchController.text);
@@ -284,7 +391,6 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
       _hasMoreSystemFiles = false;
       _loadingMoreSystemFiles = false;
       _systemFilesPageError = false;
-      _permissionRequired = false;
     });
     widget.onCategoryChanged?.call(category.label);
     if (category == _BrowserCategory.images) {
@@ -572,34 +678,7 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
   ) async {
     try {
       if (defaultTargetPlatform != TargetPlatform.android) return [];
-      if ((ref.read(deviceInfoProvider).androidSdkInt ?? 0) <= 32) {
-        if (!await Permission.storage.request().then(
-          (permission) => permission.isGranted,
-        )) {
-          if (mounted && _category == category) setState(() => _permissionRequired = true);
-          return [];
-        }
-      } else if (category == _BrowserCategory.images || category == _BrowserCategory.videos || category == _BrowserCategory.audio) {
-        final type = switch (category) {
-          _BrowserCategory.images => RequestType.image,
-          _BrowserCategory.videos => RequestType.video,
-          _BrowserCategory.audio => RequestType.audio,
-          _ => RequestType.common,
-        };
-        final permission = await PhotoManager.requestPermissionExtend(
-          requestOption: PermissionRequestOption(
-            androidPermission: AndroidPermission(
-              type: type,
-              mediaLocation: false,
-            ),
-          ),
-        );
-        if (!permission.isAuth) {
-          if (mounted && _category == category) setState(() => _permissionRequired = true);
-          return [];
-        }
-      }
-      if (mounted && _category == category) _permissionRequired = false;
+      if (!await _ensureBrowsePermission(requestIfNeeded: true)) return [];
       final files = await android_channel.queryMediaFilesAndroid(
         category: category.name,
         offset: 0,
@@ -701,16 +780,7 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
       _ => RequestType.common,
     };
     try {
-      final permission = await PhotoManager.requestPermissionExtend(
-        requestOption: PermissionRequestOption(
-          androidPermission: AndroidPermission(type: type, mediaLocation: false),
-        ),
-      );
-      if (!permission.isAuth) {
-        if (mounted && _category == category) setState(() => _permissionRequired = true);
-        return [];
-      }
-      if (mounted && _category == category) _permissionRequired = false;
+      if (!await _ensureBrowsePermission(requestIfNeeded: true)) return [];
       return PhotoManager.getAssetPathList(
         type: type,
         hasAll: true,
@@ -766,9 +836,10 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
   }
 
   Future<List<AssetEntity>> _filterAssets(List<AssetEntity> assets) async {
-    if (_searchQuery.isEmpty) return assets;
+    final existingAssets = assets.where((asset) => !_deletedAssetIds.contains(asset.id)).toList();
+    if (_searchQuery.isEmpty) return existingAssets;
     final matches = await Future.wait(
-      assets.map((asset) async {
+      existingAssets.map((asset) async {
         final titleFuture = _assetTitles.putIfAbsent(
           asset.id,
           () => asset.titleAsync,
@@ -820,6 +891,59 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
       lastModified: file.lastModified,
     );
     await _toggleFile(await CrossFileConverters.convertFileInfo(namedFile));
+  }
+
+  Future<void> _toggleFolder(android_channel.AndroidBrowseEntry entry) async {
+    final file = CrossFile(
+      name: entry.name,
+      fileType: FileType.other,
+      size: entry.size,
+      thumbnail: null,
+      asset: null,
+      path: entry.uri,
+      bytes: null,
+      lastModified: entry.lastModified,
+      lastAccessed: null,
+    );
+    if (_isPathSelected(entry.uri)) {
+      _selectedFolderUris.remove(entry.uri);
+      _selectedFolderNames.remove(entry.uri);
+    } else {
+      _selectedFolderUris.add(entry.uri);
+      _selectedFolderNames[entry.uri] = entry.name;
+    }
+    await _toggleFile(file);
+  }
+
+  Future<List<CrossFile>?> filesForSending(List<CrossFile> selection) async {
+    final files = <CrossFile>[];
+    final seenPaths = <String>{};
+    try {
+      for (final selected in selection) {
+        final path = selected.path;
+        if (path == null || !_selectedFolderUris.contains(path)) {
+          if (path == null || seenPaths.add(path)) files.add(selected);
+          continue;
+        }
+
+        final folderName = _selectedFolderNames[path] ?? selected.name;
+        final folderFiles = await android_channel.listFolderTreeFilesAndroid(uri: path);
+        for (final file in folderFiles) {
+          if (!seenPaths.add(file.uri)) continue;
+          files.add(
+            await CrossFileConverters.convertFileInfo(
+              file,
+              name: p.join(folderName, file.name),
+            ),
+          );
+        }
+      }
+    } catch (error, stackTrace) {
+      _logStorageError('expand_selected_folder_for_send', error, stackTrace);
+      _showBrowserMessage(BrowserStrings.couldNotLoadCategoryFiles);
+      return null;
+    }
+    return files;
   }
 
   Future<void> _toggleFile(CrossFile file) async {
@@ -922,6 +1046,7 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
       if (!mounted) return;
       final resume = _waitForResume();
       try {
+        ref.notifier(pairingControllerProvider).logUiEvent('uninstall_launch', entry.app.packageName);
         await android_channel.uninstallAppAndroid(packageName: entry.app.packageName);
         await resume;
         if (!mounted) return;
@@ -930,7 +1055,9 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
           onlyAppsWithLaunchIntent: false,
           includeAppIcons: false,
         );
-        if (installedApps.any((app) => app.packageName == entry.app.packageName)) continue;
+        final stillInstalled = installedApps.any((app) => app.packageName == entry.app.packageName);
+        ref.notifier(pairingControllerProvider).logUiEvent('uninstall_return', '${entry.app.packageName} stillInstalled=$stillInstalled');
+        if (stillInstalled) continue;
         _removeSelectedPaths({entry.file.path!});
       } catch (error, stackTrace) {
         _cancelResumeWait();
@@ -951,51 +1078,34 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
 
   Future<void> _deleteSelectedFiles(List<CrossFile> files) async {
     final sdk = ref.read(deviceInfoProvider).androidSdkInt ?? 0;
-    if (sdk <= 29 && !await Permission.storage.status.then((status) => status.isGranted)) {
-      if (!mounted) return;
-      await showDialog<void>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text(BrowserStrings.storageDeletePermissionTitle),
-          content: const Text(BrowserStrings.storageDeletePermissionMessage),
-          actions: [
-            TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text(BrowserStrings.cancel)),
-            FilledButton(
-              onPressed: () async {
-                Navigator.of(dialogContext).pop();
-                await openAppSettings();
-              },
-              child: const Text(BrowserStrings.openSettings),
-            ),
-          ],
-        ),
-      );
-      return;
-    }
-
     final targets = <({CrossFile file, String path})>[];
     for (final file in files) {
-      final path = await _verifiedDeletePath(file);
-      if (path != null) targets.add((file: file, path: path));
+      try {
+        final path = await _verifiedDeletePath(file);
+        if (path != null) targets.add((file: file, path: path));
+      } catch (error, stackTrace) {
+        _logDeleteRejected(file, 'path verification failed (${error.runtimeType})');
+        _logger.warning('Could not verify delete path for ${file.name}', error, stackTrace);
+      }
     }
     if (targets.length != files.length) _showBrowserMessage(BrowserStrings.filesCouldNotBeIdentified);
     if (targets.isEmpty || !mounted) return;
+    if (sdk <= 29 && targets.any((target) => !target.path.startsWith('content://')) && !await _ensureBrowsePermission(requestIfNeeded: false)) {
+      if (mounted) setState(() => _permissionRequired = true);
+      return;
+    }
+    if (!mounted) return;
 
     final totalBytes = targets.fold<int>(0, (sum, target) => sum + target.file.size);
     final sizeInMb = '${(totalBytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    final selectedFolders = targets.where((target) => _selectedFolderUris.contains(target.path)).toList();
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(BrowserStrings.deleteFilesConfirmation(targets.length, sizeInMb)),
-            if (sdk >= 30) ...[
-              const SizedBox(height: 8),
-              const Text(BrowserStrings.androidDeleteConfirmation),
-            ],
-          ],
+        content: Text(
+          selectedFolders.length == 1 && targets.length == 1
+              ? BrowserStrings.deleteFolderConfirmation(_selectedFolderNames[selectedFolders.single.path] ?? selectedFolders.single.file.name)
+              : BrowserStrings.deleteFilesConfirmation(targets.length, sizeInMb),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text(BrowserStrings.cancel)),
@@ -1009,7 +1119,30 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
       final result = await android_channel.deleteFilesAndroid(paths: targets.map((target) => target.path).toList());
       if (result.cancelled) return;
       if (result.deleted.isNotEmpty) {
-        _removeSelectedPaths(result.deleted.toSet());
+        final deletedPaths = result.deleted.toSet();
+        final selectedPaths = {
+          ...deletedPaths,
+          for (final target in targets)
+            if (deletedPaths.contains(target.path) && target.file.path != null) target.file.path!,
+        };
+        final deletedAssets = targets
+            .where((target) => deletedPaths.contains(target.path) && target.file.asset != null)
+            .map((target) => target.file.asset!.id)
+            .toSet();
+        setState(() {
+          _deletedAssetIds.addAll(deletedAssets);
+          _additionalAssets.removeWhere((asset) => deletedAssets.contains(asset.id));
+          _selectedFolderUris.removeAll(deletedPaths);
+          for (final path in deletedPaths) {
+            _selectedFolderNames.remove(path);
+          }
+        });
+        _removeSelectedPaths(selectedPaths);
+        try {
+          await PhotoManager.clearFileCache();
+        } catch (error, stackTrace) {
+          _logPhotoError('clear_deleted_photo_cache', error, stackTrace);
+        }
         await _reloadAffectedCategories();
         _refreshStorageStats();
       }
@@ -1041,16 +1174,64 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
 
   Future<String?> _verifiedDeletePath(CrossFile file) async {
     if (file.asset != null) {
+      final mediaCollection = switch (file.asset!.type) {
+        AssetType.image => 'images',
+        AssetType.video => 'video',
+        AssetType.audio => 'audio',
+        _ => null,
+      };
+      if (mediaCollection != null) {
+        final mediaUri = 'content://media/external/$mediaCollection/media/${file.asset!.id}';
+        if (isMediaStoreContentUri(mediaUri)) return mediaUri;
+      }
       final origin = await file.asset!.originFile;
-      if (origin == null || !p.isAbsolute(origin.path) || !await origin.exists()) return null;
+      if (origin == null) {
+        _logDeleteRejected(file, 'photo asset has no original file');
+        return null;
+      }
+      if (!p.isAbsolute(origin.path)) {
+        _logDeleteRejected(file, 'photo asset path is not absolute');
+        return null;
+      }
+      if (await FileSystemEntity.type(origin.path) != FileSystemEntityType.file) {
+        _logDeleteRejected(file, 'photo asset path is not an existing file');
+        return null;
+      }
       return origin.path;
     }
     final path = file.path;
-    if (path == null || path.isEmpty) return null;
-    if (path.startsWith('content://')) return _verifiedSafUris.contains(path) ? path : null;
+    if (path == null || path.isEmpty) {
+      _logDeleteRejected(file, 'missing path');
+      return null;
+    }
+    if (isMediaStoreContentUri(path)) return path;
+    if (path.startsWith('content://')) {
+      if (!_verifiedSafUris.contains(path)) {
+        _logDeleteRejected(file, 'content URI is neither a verified MediaStore URI nor a browsed SAF URI');
+        return null;
+      }
+      if (path == _treeRootUri || _selectedFolderNames[path]?.toLowerCase() == 'android') {
+        _logDeleteRejected(file, 'storage root and Android folder are protected');
+        return null;
+      }
+      return path;
+    }
     final source = File(path);
-    if (!p.isAbsolute(source.path) || !await source.exists()) return null;
+    if (!p.isAbsolute(source.path)) {
+      _logDeleteRejected(file, 'file path is not absolute');
+      return null;
+    }
+    if (await FileSystemEntity.type(source.path) != FileSystemEntityType.file) {
+      _logDeleteRejected(file, 'file path is not an existing file');
+      return null;
+    }
     return path;
+  }
+
+  void _logDeleteRejected(CrossFile file, String reason) {
+    final message = '${file.name}: $reason';
+    _logger.warning('Delete target rejected: $message');
+    ref.notifier(pairingControllerProvider).logUiEvent('delete_target_rejected', message);
   }
 
   Future<String?> _verifiedPathForTransferCheck(CrossFile file) async {
@@ -1063,16 +1244,20 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
 
   bool _isPathInActiveTransfer(String path) {
     final sendSessions = ref.read(sendProvider).values;
-    if (sendSessions.any(
-      (session) =>
-          (session.status == SessionStatus.waiting || session.status == SessionStatus.sending) &&
-          session.files.values.any((file) => file.path == path),
-    )) {
-      return true;
-    }
     final receiveSession = ref.read(serverProvider)?.session;
-    if (receiveSession == null || (receiveSession.status != SessionStatus.waiting && receiveSession.status != SessionStatus.sending)) return false;
-    return receiveSession.files.values.any((file) => _receivingFilePath(receiveSession, file) == path);
+    final transfers = <({SessionStatus status, Iterable<String> paths})>[
+      for (final session in sendSessions)
+        (
+          status: session.status,
+          paths: session.files.values.map((file) => file.path).whereType<String>(),
+        ),
+      if (receiveSession != null)
+        (
+          status: receiveSession.status,
+          paths: receiveSession.files.values.map((file) => _receivingFilePath(receiveSession, file)).whereType<String>(),
+        ),
+    ];
+    return activeTransferContainsPath(path: path, transfers: transfers);
   }
 
   String? _receivingFilePath(ReceiveSessionState session, ReceivingFile file) {
@@ -1229,23 +1414,39 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
     );
   }
 
-  Widget _openSettingsAction() => TextButton.icon(
+  Widget _permissionAction() => FilledButton.icon(
     onPressed: () async {
-      await openAppSettings();
+      if (_permissionPermanentlyDenied) {
+        await openAppSettings();
+        return;
+      }
+      if (!await _ensureBrowsePermission(requestIfNeeded: true, explicitRequest: true)) return;
+      if (!mounted) return;
+      setState(() => _permissionRequired = false);
+      await _refreshCurrentCategory();
     },
-    icon: const Icon(Icons.settings_outlined),
-    label: const Text(BrowserStrings.openSettings),
+    icon: Icon(_permissionPermanentlyDenied ? Icons.settings_outlined : Icons.lock_open_outlined),
+    label: Text(_permissionPermanentlyDenied ? BrowserStrings.openSettings : BrowserStrings.allowAccess),
   );
 
-  Widget _buildCategoryBody() => switch (_category) {
-    _BrowserCategory.images => _buildImagesBrowser(),
-    _BrowserCategory.videos ||
-    _BrowserCategory.audio => defaultTargetPlatform == TargetPlatform.android ? _buildAndroidMediaBrowser() : _buildMediaBrowser(),
-    _BrowserCategory.apps => _buildAppsBrowser(),
-    _BrowserCategory.text => _buildFilesBrowser(textOnly: true),
-    _BrowserCategory.downloads || _BrowserCategory.documents => _buildSystemFileBrowser(),
-    _BrowserCategory.files => _buildFilesBrowser(),
-  };
+  Widget _permissionRequiredState() => _emptyState(
+    icon: Icons.folder_off_outlined,
+    message: BrowserStrings.storagePermissionRequired,
+    action: _permissionAction(),
+  );
+
+  Widget _buildCategoryBody() {
+    if (_permissionRequired) return _permissionRequiredState();
+    return switch (_category) {
+      _BrowserCategory.images => _buildImagesBrowser(),
+      _BrowserCategory.videos ||
+      _BrowserCategory.audio => defaultTargetPlatform == TargetPlatform.android ? _buildAndroidMediaBrowser() : _buildMediaBrowser(),
+      _BrowserCategory.apps => _buildAppsBrowser(),
+      _BrowserCategory.text => _buildFilesBrowser(textOnly: true),
+      _BrowserCategory.downloads || _BrowserCategory.documents => _buildSystemFileBrowser(),
+      _BrowserCategory.files => _buildFilesBrowser(),
+    };
+  }
 
   Widget _buildImagesBrowser() {
     final future = _assetPathsFuture ??= _loadAssetPaths(_category);
@@ -1269,7 +1470,7 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
           return _emptyState(
             icon: _category.icon,
             message: _permissionRequired ? BrowserStrings.mediaPermissionRequired : BrowserStrings.noImagesFound,
-            action: _permissionRequired ? _openSettingsAction() : null,
+            action: _permissionRequired ? _permissionAction() : null,
           );
         }
         final photoAlbums = albums.length > 1 ? albums.skip(1).toList() : albums;
@@ -1455,7 +1656,7 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
               label: const Text(BrowserStrings.retry),
             ),
           );
-        final assets = [...?snapshot.data, ..._additionalAssets];
+        final assets = [...?snapshot.data, ..._additionalAssets].where((asset) => !_deletedAssetIds.contains(asset.id)).toList();
         if (assets.isEmpty)
           return _emptyState(
             icon: _category.icon,
@@ -1562,6 +1763,10 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
                 isOriginal: false,
                 thumbnailSize: const ThumbnailSize.square(240),
                 fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) {
+                  _scheduleMissingAssetRemoval(asset);
+                  return const SizedBox.shrink();
+                },
               ),
               if (selected)
                 Positioned.fill(
@@ -1593,6 +1798,17 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
     );
   }
 
+  void _scheduleMissingAssetRemoval(AssetEntity asset) {
+    if (!_scheduledMissingAssetIds.add(asset.id)) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scheduledMissingAssetIds.remove(asset.id);
+      if (!mounted || !_deletedAssetIds.add(asset.id)) return;
+      setState(() {
+        _additionalAssets.removeWhere((candidate) => candidate.id == asset.id);
+      });
+    });
+  }
+
   Widget _buildMediaBrowser() {
     final future = _assetsFuture;
     if (future == null) return const Center(child: CircularProgressIndicator());
@@ -1611,13 +1827,13 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
             ),
           );
         }
-        final assets = [...?snapshot.data, ..._additionalAssets];
+        final assets = [...?snapshot.data, ..._additionalAssets].where((asset) => !_deletedAssetIds.contains(asset.id)).toList();
         if (assets.isEmpty) {
           return _emptyState(
             icon: _category.icon,
             message: _permissionRequired ? BrowserStrings.mediaPermissionRequired : BrowserStrings.noCategoryFiles,
             action: _permissionRequired
-                ? _openSettingsAction()
+                ? _permissionAction()
                 : TextButton.icon(
                     onPressed: () => _retryPhotoQuery(),
                     icon: const Icon(Icons.refresh),
@@ -2108,11 +2324,11 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
             },
           ),
         );
-        _verifiedSafUris.addAll(entries.where((entry) => !entry.isDirectory && entry.uri.startsWith('content://')).map((entry) => entry.uri));
+        _verifiedSafUris.addAll((snapshot.data ?? []).where((entry) => entry.uri.startsWith('content://')).map((entry) => entry.uri));
         if (snapshot.hasError) {
           final error = _emptyState(
             icon: Icons.folder_off_outlined,
-            message: "Couldn't read this folder.\n${snapshot.error}",
+            message: BrowserStrings.couldNotLoadCategoryFiles,
             action: TextButton.icon(
               onPressed: () => setState(
                 () => _treeEntriesFuture = android_channel.listFolderTreeAndroid(uri: folderUri),
@@ -2212,11 +2428,12 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
                           lastModified: entry.lastModified,
                         );
                         return _fileRow(
-                          selected: !entry.isDirectory && _isSystemFileSelected(file),
+                          selected: entry.isDirectory ? _isPathSelected(entry.uri) : _isSystemFileSelected(file),
                           icon: entry.isDirectory ? Icons.folder_outlined : _fileTypeIcon(name),
                           title: name,
                           subtitle: entry.isDirectory ? BrowserStrings.folder : '${entry.size.asReadableFileSize}${_shortDate(entry.lastModified)}',
                           isText: textOnly && !entry.isDirectory,
+                          onTrailingTap: entry.isDirectory ? () => _toggleFolder(entry) : () => _toggleSystemFile(file),
                           onTap: entry.isDirectory
                               ? () => setState(() {
                                   _treeBreadcrumbs.add((name, entry.uri));
@@ -2259,7 +2476,7 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
         if (snapshot.hasError) {
           return _emptyState(
             icon: _category.icon,
-            message: 'Could not load ${_category.label.toLowerCase()} files: ${snapshot.error}',
+            message: BrowserStrings.couldNotLoadCategoryFiles,
             action: TextButton.icon(
               onPressed: () => setState(
                 () => _systemFilesFuture = _loadSystemFiles(_category),
@@ -2350,7 +2567,7 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
                 ? BrowserStrings.mediaPermissionRequired
                 : BrowserStrings.noCategoryFiles,
             action: _permissionRequired
-                ? _openSettingsAction()
+                ? _permissionAction()
                 : TextButton.icon(
                     onPressed: _refreshCurrentCategory,
                     icon: const Icon(Icons.refresh),
@@ -2441,6 +2658,7 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
     required String title,
     required String subtitle,
     required VoidCallback onTap,
+    VoidCallback? onTrailingTap,
     Widget? leading,
     bool isText = false,
   }) {
@@ -2493,10 +2711,22 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
                   ),
                 ),
                 const SizedBox(width: 8),
-                Icon(
-                  selected ? Icons.check_circle : Icons.add_circle_outline,
-                  color: selected ? tokens.primary : tokens.icon,
-                ),
+                if (onTrailingTap == null)
+                  Icon(
+                    selected ? Icons.check_circle : Icons.add_circle_outline,
+                    color: selected ? tokens.primary : tokens.icon,
+                  )
+                else
+                  IconButton(
+                    tooltip: selected ? BrowserStrings.clearSelection : BrowserStrings.addSelected,
+                    constraints: const BoxConstraints.tightFor(width: 48, height: 48),
+                    padding: EdgeInsets.zero,
+                    onPressed: onTrailingTap,
+                    icon: Icon(
+                      selected ? Icons.check_circle : Icons.add_circle_outline,
+                      color: selected ? tokens.primary : tokens.icon,
+                    ),
+                  ),
               ],
             ),
           ),

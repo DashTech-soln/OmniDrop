@@ -836,6 +836,9 @@ class _TransferTabState extends State<_TransferTab> with Refena, AutomaticKeepAl
     final connection = ref.read(pairingConnectionProvider);
     var files = ref.read(selectedSendingFilesProvider);
     if (files.isEmpty || connection.peers.isEmpty) return;
+    final expandedFiles = await widget.browserKey.currentState?.filesForSending(files);
+    if (!mounted || expandedFiles == null || expandedFiles.isEmpty) return;
+    files = expandedFiles;
 
     List<PairingDeviceInfo> targets;
     if (connection.peers.length == 1) {
@@ -927,6 +930,9 @@ class _TransferTabState extends State<_TransferTab> with Refena, AutomaticKeepAl
       files = ref.read(selectedSendingFilesProvider);
     }
     if (!mounted || files.isEmpty) return;
+    final expandedFiles = await widget.browserKey.currentState?.filesForSending(files);
+    if (!mounted || expandedFiles == null || expandedFiles.isEmpty) return;
+    files = expandedFiles;
     await showDialog<void>(
       context: context,
       builder: (_) => Consumer(
