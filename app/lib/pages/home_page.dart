@@ -102,11 +102,9 @@ class _HomePageState extends State<HomePage> with Refena, SingleTickerProviderSt
     _headerAnimationController =
         AnimationController(
           vsync: this,
-          duration: const Duration(milliseconds: 250),
+          duration: const Duration(milliseconds: 200),
           value: 1,
-        )..addListener(() {
-          if (mounted) setState(() {});
-        });
+        );
 
     ensureRef((ref) async {
       ref.redux(homePageControllerProvider).dispatch(ChangeTabAction(widget.initialTab));
@@ -207,14 +205,9 @@ class _HomePageState extends State<HomePage> with Refena, SingleTickerProviderSt
                   child: SafeArea(child: const SettingsTab()),
                 ),
               ),
-              appBar: PreferredSize(
-                preferredSize: Size.fromHeight(
-                  kToolbarHeight * _headerAnimationController.value,
-                ),
-                child: ClipRect(
-                  child: SizedBox(
-                    height: kToolbarHeight,
-                    child: AppBar(
+              appBar: _AnimatedHeaderAppBar(
+                animation: _headerAnimationController,
+                child: AppBar(
                       automaticallyImplyLeading: false,
                       backgroundColor: Colors.transparent,
                       flexibleSpace: DecoratedBox(
@@ -392,8 +385,6 @@ class _HomePageState extends State<HomePage> with Refena, SingleTickerProviderSt
                         ),
                       ],
                     ),
-                  ),
-                ),
               ),
               body: Stack(
                 fit: StackFit.expand,

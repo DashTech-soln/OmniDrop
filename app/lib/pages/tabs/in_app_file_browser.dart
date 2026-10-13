@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:device_apps/device_apps.dart';
 import 'package:flutter/foundation.dart';
@@ -30,6 +32,7 @@ import 'package:localsend_isolates/model/file_type.dart';
 import 'package:localsend_isolates/util/file_size_helper.dart';
 import 'package:logging/logging.dart';
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:refena_flutter/refena_flutter.dart';
 import 'package:localsend_app/widget/dialogs/message_input_dialog.dart';
@@ -45,6 +48,99 @@ enum _BrowserCategory {
   documents,
   text,
   files,
+}
+
+class _InstalledApp {
+  final String packageName;
+  final String appName;
+  final String apkFilePath;
+  final String? versionName;
+  final int versionCode;
+  final bool systemApp;
+  final int updateTimeMillis;
+  final int? size;
+
+  const _InstalledApp({
+    required this.packageName,
+    required this.appName,
+    required this.apkFilePath,
+    required this.versionName,
+    required this.versionCode,
+    required this.systemApp,
+    required this.updateTimeMillis,
+    required this.size,
+  });
+
+  factory _InstalledApp.fromApplication(Application app, int? size) => _InstalledApp(
+    packageName: app.packageName,
+    appName: app.appName,
+    apkFilePath: app.apkFilePath,
+    versionName: app.versionName,
+    versionCode: app.versionCode,
+    systemApp: app.systemApp,
+    updateTimeMillis: app.updateTimeMillis,
+    size: size,
+  );
+
+  factory _InstalledApp.fromJson(Map<String, dynamic> json) => _InstalledApp(
+    packageName: json['packageName'] as String,
+    appName: json['appName'] as String,
+    apkFilePath: json['apkFilePath'] as String,
+    versionName: json['versionName'] as String?,
+    versionCode: (json['versionCode'] as num).toInt(),
+    systemApp: json['systemApp'] as bool,
+    updateTimeMillis: (json['updateTimeMillis'] as num).toInt(),
+    size: (json['size'] as num?)?.toInt(),
+  );
+
+  Map<String, Object?> toJson() => {
+    'packageName': packageName,
+    'appName': appName,
+    'apkFilePath': apkFilePath,
+    'versionName': versionName,
+    'versionCode': versionCode,
+    'systemApp': systemApp,
+    'updateTimeMillis': updateTimeMillis,
+    'size': size,
+  };
+
+  String get iconFileName => '${Uri.encodeComponent(packageName)}-$versionCode.png';
+
+  bool hasSameMetadata(_InstalledApp other) =>
+      packageName == other.packageName &&
+      appName == other.appName &&
+      apkFilePath == other.apkFilePath &&
+      versionName == other.versionName &&
+      versionCode == other.versionCode &&
+      systemApp == other.systemApp &&
+      updateTimeMillis == other.updateTimeMillis &&
+      size == other.size;
+}
+
+List<int?> _readApkFileLengths(List<String> paths) => [
+  for (final path in paths)
+    try {
+      File(path).lengthSync()
+    } on FileSystemException {
+      null
+    },
+];
+
+List<Map<String, Object?>> _sortInstalledApps(Map<String, Object?> input) {
+  final apps = (input['apps']! as List<Object?>)
+      .map((value) => _InstalledApp.fromJson(Map<String, dynamic>.from(value! as Map)))
+      .toList();
+  final ascending = input['ascending']! as bool;
+  final sortMode = input['sortMode']! as String;
+  apps.sort((a, b) {
+    final result = switch (sortMode) {
+      'name' => a.appName.toLowerCase().compareTo(b.appName.toLowerCase()),
+      'size' => (a.size ?? -1).compareTo(b.size ?? -1),
+      _ => a.updateTimeMillis.compareTo(b.updateTimeMillis),
+    };
+    return ascending ? result : -result;
+  });
+  return apps.map((app) => app.toJson()).toList();
 }
 
 final _logger = Logger('InAppFileBrowser');
@@ -119,9 +215,13 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
   final Map<String, Future<String>> _assetTitles = {};
   final Map<String, Future<int>> _assetCountFutures = {};
   final Map<String, Future<List<AssetEntity>>> _assetSortFutures = {};
-  final Map<String, Future<List<Application>>> _appSortFutures = {};
+  final Map<String, Future<List<_InstalledApp>>> _appSortFutures = {};
   final Map<String, Future<android_channel.ApkInfo?>> _apkInfoFutures = {};
   final Queue<Future<void> Function()> _apkInfoQueue = Queue();
+  final Queue<Future<void> Function()> _appIconQueue = Queue();
+  final Map<String, Future<Uint8List?>> _appIconFutures = {};
+  final LinkedHashMap<String, Uint8List> _appIconMemory = LinkedHashMap();
+  final Set<String> _appIconsLoadedThisVisit = {};
   final Set<String> _verifiedSafUris = {};
   Timer? _searchDebounce;
   String _searchQuery = '';
@@ -141,11 +241,18 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
   String? _treeRootUri;
   String? _currentFolderUri;
   Future<List<android_channel.AndroidBrowseEntry>>? _treeEntriesFuture;
-  Future<List<Application>>? _installedApplicationsFuture;
+  Future<List<_InstalledApp>>? _installedApplicationsFuture;
   Future<List<android_channel.ApkFile>>? _apkFilesFuture;
+  Future<void>? _appRefreshFuture;
   Completer<void>? _resumeCompleter;
+  DateTime? _appsOpenedAt;
   bool _leftForeground = false;
   int _activeApkInfoLoads = 0;
+  int _activeAppIconLoads = 0;
+  int _appIconTargetCount = 0;
+  bool _loggedFirstAppCell = false;
+  bool _loggedFirstAppIcon = false;
+  bool _loggedAllAppIcons = false;
   int _systemFilesOffset = 0;
   int _assetPage = 0;
   bool _hasMoreSystemFiles = false;
@@ -167,6 +274,7 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
     WidgetsBinding.instance.addObserver(this);
     _searchController.addListener(_handleSearchControllerChanged);
     _systemFilesFuture = Future.value([]);
+    _installedApplicationsFuture = _readCachedInstalledApps();
     if (defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS) {
       PhotoManager.addChangeCallback(_onPhotoManagerChange);
       unawaited(_startPhotoChangeNotifications());
@@ -320,16 +428,186 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
     _leftForeground = false;
   }
 
-  Future<List<Application>> _loadInstalledApplications() async {
+  Future<Directory> _installedAppsCacheDirectory() async {
+    final directory = Directory(p.join((await getTemporaryDirectory()).path, 'installed_apps'));
+    await directory.create(recursive: true);
+    return directory;
+  }
+
+  Future<List<_InstalledApp>> _readCachedInstalledApps() async {
     try {
-      return await DeviceApps.getInstalledApplications(
+      final directory = await _installedAppsCacheDirectory();
+      final cacheFile = File(p.join(directory.path, 'apps.json'));
+      if (!await cacheFile.exists()) return [];
+      final json = jsonDecode(await cacheFile.readAsString());
+      if (json is! List) throw const FormatException('Installed app cache must be a list');
+      return json.map((value) => _InstalledApp.fromJson(Map<String, dynamic>.from(value as Map))).toList();
+    } catch (error, stackTrace) {
+      _logAppsError('apps_cache_read', error, stackTrace);
+      return [];
+    }
+  }
+
+  Future<void> _writeInstalledAppsCache(List<_InstalledApp> apps) async {
+    try {
+      final directory = await _installedAppsCacheDirectory();
+      final cacheFile = File(p.join(directory.path, 'apps.json'));
+      final pendingFile = File('${cacheFile.path}.tmp');
+      await pendingFile.writeAsString(jsonEncode(apps.map((app) => app.toJson()).toList()), flush: true);
+      await pendingFile.rename(cacheFile.path);
+    } catch (error, stackTrace) {
+      _logAppsError('apps_cache_write', error, stackTrace);
+    }
+  }
+
+  Future<void> _refreshInstalledAppsInBackground() {
+    final current = _appRefreshFuture;
+    if (current != null) return current;
+    final refresh = _refreshInstalledApps();
+    _appRefreshFuture = refresh;
+    return refresh.whenComplete(() {
+      if (identical(_appRefreshFuture, refresh)) _appRefreshFuture = null;
+    });
+  }
+
+  Future<void> _refreshInstalledApps() async {
+    try {
+      final installedApps = await DeviceApps.getInstalledApplications(
         includeSystemApps: true,
         onlyAppsWithLaunchIntent: false,
-        includeAppIcons: true,
+        includeAppIcons: false,
       );
+      final sizes = await compute(_readApkFileLengths, installedApps.map((app) => app.apkFilePath).toList());
+      final refreshedApps = List.generate(installedApps.length, (index) {
+        if (sizes[index] == null) {
+          _logAppsEvent('app_size_unavailable', installedApps[index].packageName);
+        }
+        return _InstalledApp.fromApplication(installedApps[index], sizes[index]);
+      });
+      final previousApps = await (_installedApplicationsFuture ??= _readCachedInstalledApps());
+      final previousByPackage = {for (final app in previousApps) app.packageName: app};
+      final changed =
+          previousApps.length != refreshedApps.length ||
+          refreshedApps.any((app) => previousByPackage[app.packageName]?.hasSameMetadata(app) != true);
+      _appIconTargetCount = refreshedApps.length;
+      await _writeInstalledAppsCache(refreshedApps);
+      if (changed && mounted) {
+        setState(() => _installedApplicationsFuture = Future.value(refreshedApps));
+      }
+      _logAllAppIconsIfReady();
     } catch (error, stackTrace) {
-      _logStorageError('load_installed_apps', error, stackTrace);
-      rethrow;
+      _logAppsError('apps_refresh', error, stackTrace);
+    }
+  }
+
+  void _logAppsEvent(String event, String message) {
+    _logger.info('$event $message');
+    if (mounted) ref.notifier(pairingControllerProvider).logUiEvent(event, message);
+  }
+
+  void _logAppsError(String event, Object error, StackTrace stackTrace) {
+    _logger.warning(event, error, stackTrace);
+    _logAppsEvent(event, error.toString());
+  }
+
+  int? _appElapsedMilliseconds() {
+    final started = _appsOpenedAt;
+    return started == null ? null : DateTime.now().difference(started).inMilliseconds;
+  }
+
+  void _markAppIconLoaded(_InstalledApp app) {
+    if (!_appIconsLoadedThisVisit.add(_appIconCacheKey(app))) return;
+    final elapsed = _appElapsedMilliseconds();
+    if (!_loggedFirstAppIcon && elapsed != null) {
+      _loggedFirstAppIcon = true;
+      _logAppsEvent('apps_first_icon_ms', '$elapsed package=${app.packageName}');
+    }
+    _logAllAppIconsIfReady();
+  }
+
+  void _logAllAppIconsIfReady() {
+    final elapsed = _appElapsedMilliseconds();
+    if (!_loggedAllAppIcons && elapsed != null && _appIconTargetCount > 0 && _appIconsLoadedThisVisit.length >= _appIconTargetCount) {
+      _loggedAllAppIcons = true;
+      _logAppsEvent('apps_all_icons_ms', '$elapsed count=$_appIconTargetCount');
+    }
+  }
+
+  String _appIconCacheKey(_InstalledApp app) => '${app.packageName}:${app.versionCode}';
+
+  void _cacheAppIcon(String key, Uint8List icon) {
+    _appIconMemory.remove(key);
+    _appIconMemory[key] = icon;
+    while (_appIconMemory.length > 48) {
+      _appIconMemory.remove(_appIconMemory.keys.first);
+    }
+  }
+
+  Future<Uint8List?> _loadAppIcon(_InstalledApp app) async {
+    final key = _appIconCacheKey(app);
+    final directory = await _installedAppsCacheDirectory();
+    final file = File(p.join(directory.path, app.iconFileName));
+    try {
+      if (await file.exists()) {
+        final bytes = await file.readAsBytes();
+        _cacheAppIcon(key, bytes);
+        return bytes;
+      }
+    } on FileSystemException catch (error, stackTrace) {
+      _logAppsError('app_icon_cache_read', error, stackTrace);
+    }
+    final application = await DeviceApps.getApp(app.packageName, true);
+    if (application is! ApplicationWithIcon) return null;
+    final bytes = application.icon;
+    _cacheAppIcon(key, bytes);
+    try {
+      await file.writeAsBytes(bytes, flush: false);
+    } on FileSystemException catch (error, stackTrace) {
+      _logAppsError('app_icon_cache_write', error, stackTrace);
+    }
+    return bytes;
+  }
+
+  Future<Uint8List?> _appIconFuture(_InstalledApp app) {
+    final key = _appIconCacheKey(app);
+    final memoryIcon = _appIconMemory.remove(key);
+    if (memoryIcon != null) {
+      _appIconMemory[key] = memoryIcon;
+      _markAppIconLoaded(app);
+      return Future.value(memoryIcon);
+    }
+    return _appIconFutures.putIfAbsent(key, () {
+      final completer = Completer<Uint8List?>();
+      final future = completer.future;
+      future.then(
+        (_) => _appIconFutures.remove(key),
+        onError: (Object error, StackTrace stackTrace) => _appIconFutures.remove(key),
+      );
+      _appIconQueue.add(() async {
+        try {
+          final icon = await _loadAppIcon(app);
+          _markAppIconLoaded(app);
+          completer.complete(icon);
+        } catch (error, stackTrace) {
+          _logAppsError('app_icon_load', error, stackTrace);
+          _markAppIconLoaded(app);
+          completer.completeError(error, stackTrace);
+        }
+      });
+      _runAppIconQueue();
+      return future;
+    });
+  }
+
+  void _runAppIconQueue() {
+    while (_activeAppIconLoads < 2 && _appIconQueue.isNotEmpty) {
+      _activeAppIconLoads++;
+      unawaited(
+        _appIconQueue.removeFirst()().whenComplete(() {
+          _activeAppIconLoads--;
+          _runAppIconQueue();
+        }),
+      );
     }
   }
 
@@ -384,6 +662,14 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
   Future<void> _openCategory(_BrowserCategory category) async {
     widget.onUserActivity?.call();
     _logBrowserReload(category);
+    if (category == _BrowserCategory.apps) {
+      _appsOpenedAt = DateTime.now();
+      _loggedFirstAppCell = false;
+      _loggedFirstAppIcon = false;
+      _loggedAllAppIcons = false;
+      _appIconsLoadedThisVisit.clear();
+      unawaited(_refreshInstalledAppsInBackground());
+    }
     setState(() {
       _category = category;
       _additionalSystemFiles.clear();
@@ -406,6 +692,15 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
       }
     } else if (category == _BrowserCategory.downloads || category == _BrowserCategory.documents) {
       _systemFilesFuture = _loadSystemFiles(category);
+    } else if (category == _BrowserCategory.apps) {
+      _apkFilesFuture ??= _loadApkFiles();
+      unawaited(
+        (_installedApplicationsFuture ??= _readCachedInstalledApps()).then((apps) {
+          if (!mounted || _appsOpenedAt == null) return;
+          _appIconTargetCount = apps.length;
+          _logAllAppIconsIfReady();
+        }),
+      );
     }
     _scrollCategoryIntoView(category);
   }
@@ -530,45 +825,16 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
     return _assetSortFutures.putIfAbsent(key, () => _sortAssets(source));
   }
 
-  Future<List<Application>> _sortApps(List<Application> source) async {
-    final apps = [...source];
-    switch (widget.sortMode) {
-      case BrowserSortMode.name:
-        apps.sort((a, b) {
-          final value = a.appName.toLowerCase().compareTo(b.appName.toLowerCase());
-          return widget.sortAscending ? value : -value;
-        });
-        break;
-      case BrowserSortMode.date:
-        apps.sort((a, b) {
-          final value = a.updateTimeMillis.compareTo(b.updateTimeMillis);
-          return widget.sortAscending ? value : -value;
-        });
-        break;
-      case BrowserSortMode.size:
-        final sizes = await Future.wait(
-          apps.map((app) async {
-            try {
-              return await File(app.apkFilePath).length();
-            } on FileSystemException catch (error, stackTrace) {
-              _logger.warning('Could not read application package size for ${app.packageName}', error, stackTrace);
-              return null;
-            }
-          }),
-        );
-        final keyed = List.generate(apps.length, (index) => (apps[index], sizes[index]));
-        keyed.sort((a, b) {
-          final value = (a.$2 ?? -1).compareTo(b.$2 ?? -1);
-          return widget.sortAscending ? value : -value;
-        });
-        return keyed.map((entry) => entry.$1).toList();
-    }
-    return apps;
-  }
-
-  Future<List<Application>> _sortedApps(List<Application> source) {
-    final key = '${widget.sortMode.name}:${widget.sortAscending}:${source.map((app) => app.packageName).join(',')}';
-    return _appSortFutures.putIfAbsent(key, () => _sortApps(source));
+  Future<List<_InstalledApp>> _sortedApps(List<_InstalledApp> source) {
+    final key = '${widget.sortMode.name}:${widget.sortAscending}:${source.map((app) => '${app.packageName}:${app.versionCode}:${app.size}').join(',')}';
+    return _appSortFutures.putIfAbsent(key, () async {
+      final sorted = await compute(_sortInstalledApps, {
+        'apps': source.map((app) => app.toJson()).toList(),
+        'sortMode': widget.sortMode.name,
+        'ascending': widget.sortAscending,
+      });
+      return sorted.map(_InstalledApp.fromJson).toList();
+    });
   }
 
   void _logBrowserReload(_BrowserCategory category) {
@@ -607,10 +873,8 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
         if (uri != null) setState(() => _treeEntriesFuture = android_channel.listFolderTreeAndroid(uri: uri));
         break;
       case _BrowserCategory.apps:
-        setState(() {
-          _installedApplicationsFuture = _loadInstalledApplications();
-          _apkFilesFuture = _loadApkFiles();
-        });
+        setState(() => _apkFilesFuture = _loadApkFiles());
+        unawaited(_refreshInstalledAppsInBackground());
         break;
     }
   }
@@ -875,8 +1139,21 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
     },
   );
 
-  Future<void> _toggleApp(Application app) async {
-    await _toggleFile(await CrossFileConverters.convertApplication(app));
+  Future<void> _toggleApp(_InstalledApp app) async {
+    final size = app.size ?? await File(app.apkFilePath).length();
+    await _toggleFile(
+      CrossFile(
+        name: '${app.appName.trim()} - v${app.versionName}.apk',
+        fileType: FileType.apk,
+        thumbnail: _appIconMemory[_appIconCacheKey(app)],
+        size: size,
+        asset: null,
+        path: app.apkFilePath,
+        bytes: null,
+        lastModified: null,
+        lastAccessed: null,
+      ),
+    );
   }
 
   Future<void> _toggleAsset(AssetEntity asset) async {
@@ -1069,10 +1346,8 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
     }
 
     if (!mounted) return;
-    setState(() {
-      _installedApplicationsFuture = _loadInstalledApplications();
-      _reloadCount++;
-    });
+    _reloadCount++;
+    unawaited(_refreshInstalledAppsInBackground());
     _refreshStorageStats();
   }
 
@@ -1916,15 +2191,15 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
   }
 
   Widget _buildAppsBrowser() {
-    final appsFuture = _installedApplicationsFuture ??= _loadInstalledApplications();
+    final appsFuture = _installedApplicationsFuture ??= _readCachedInstalledApps();
     final apkFilesFuture = _apkFilesFuture ??= _loadApkFiles();
-    return FutureBuilder<List<Application>>(
+    return FutureBuilder<List<_InstalledApp>>(
       future: appsFuture,
       builder: (context, appsSnapshot) {
         if (appsSnapshot.connectionState != ConnectionState.done) return const Center(child: CircularProgressIndicator());
         final apps = appsSnapshot.data ?? [];
         final matchingApps = apps.where((app) => _matchesSearch('${app.appName} ${app.packageName}')).toList();
-        return FutureBuilder<List<Application>>(
+        return FutureBuilder<List<_InstalledApp>>(
           future: _sortedApps(matchingApps),
           builder: (context, sortedSnapshot) {
             if (sortedSnapshot.connectionState != ConnectionState.done) return const Center(child: CircularProgressIndicator());
@@ -1937,6 +2212,7 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
                 final apkFiles = (apkSnapshot.data ?? []).where((file) => _matchesSearch(file.name)).toList();
                 return CustomScrollView(
                   key: const PageStorageKey<String>('browser-apps'),
+                  cacheExtent: 500,
                   slivers: [
                     _appSectionHeader(BrowserStrings.localApps, orderedLocalApps.length),
                     _appGrid(orderedLocalApps),
@@ -1990,7 +2266,7 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
     delegate: _AppSectionHeaderDelegate(title: title, count: count),
   );
 
-  Widget _appGrid(List<Application> apps) => apps.isEmpty
+  Widget _appGrid(List<_InstalledApp> apps) => apps.isEmpty
       ? const SliverToBoxAdapter(child: SizedBox.shrink())
       : SliverPadding(
           padding: const EdgeInsets.all(4),
@@ -2002,6 +2278,7 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
               childAspectRatio: 1.0,
             ),
             itemCount: apps.length,
+            addAutomaticKeepAlives: false,
             itemBuilder: (context, index) => _appCell(apps[index]),
           ),
         );
@@ -2120,10 +2397,8 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
         _showBrowserMessage(BrowserStrings.apkInfoUnavailable);
       }
       if (!mounted) return;
-      setState(() {
-        _installedApplicationsFuture = _loadInstalledApplications();
-        _reloadCount++;
-      });
+      _reloadCount++;
+      unawaited(_refreshInstalledAppsInBackground());
       _refreshStorageStats();
     } catch (_) {
       _cancelResumeWait();
@@ -2160,9 +2435,16 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
     }
   }
 
-  Widget _appCell(Application app) {
+  Widget _appCell(_InstalledApp app) {
+    if (!_loggedFirstAppCell && _category == _BrowserCategory.apps) {
+      _loggedFirstAppCell = true;
+      final elapsed = _appElapsedMilliseconds();
+      if (elapsed != null) _logAppsEvent('apps_first_cell_ms', '$elapsed package=${app.packageName}');
+    }
     final selected = _isPathSelected(app.apkFilePath);
     final tokens = BrowserThemeTokens.of(context);
+    final deferIcon = Scrollable.recommendDeferredLoadingForContext(context);
+    final iconFuture = deferIcon ? null : _appIconFuture(app);
     final nameStyle = Theme.of(context).textTheme.labelSmall?.copyWith(
       fontWeight: FontWeight.bold,
       height: 1,
@@ -2172,67 +2454,74 @@ class InAppFileBrowserState extends State<InAppFileBrowser> with Refena, Automat
       fontSize: (Theme.of(context).textTheme.labelSmall?.fontSize ?? 11) - 1,
       height: 1,
     );
-    return InkWell(
-      borderRadius: BorderRadius.circular(glassRadiusSmall),
-      onTap: () => _toggleApp(app),
-      child: BrowserSurface(
-        padding: EdgeInsets.zero,
+    return RepaintBoundary(
+      child: InkWell(
+        key: ValueKey<String>('installed-app-${app.packageName}'),
         borderRadius: BorderRadius.circular(glassRadiusSmall),
-        color: selected ? tokens.selection : null,
-        child: Stack(
-          children: [
-            Column(
-              children: [
-                SizedBox(
-                  height: 58,
-                  child: Center(
-                    child: SizedBox.square(
-                      dimension: 48,
-                      child: app is ApplicationWithIcon
-                          ? Image.memory(
-                              app.icon,
-                              fit: BoxFit.contain,
-                              cacheWidth: 144,
-                              cacheHeight: 144,
-                            )
-                          : Icon(Icons.android, size: 42, color: tokens.icon),
+        onTap: () => _toggleApp(app),
+        child: BrowserSurface(
+          blur: false,
+          padding: EdgeInsets.zero,
+          borderRadius: BorderRadius.circular(glassRadiusSmall),
+          color: selected ? tokens.selection : null,
+          child: Stack(
+            children: [
+              Column(
+                children: [
+                  SizedBox(
+                    height: 58,
+                    child: Center(
+                      child: SizedBox.square(
+                        dimension: 48,
+                        child: iconFuture == null
+                            ? Icon(Icons.android, size: 42, color: tokens.icon)
+                            : FutureBuilder<Uint8List?>(
+                                future: iconFuture,
+                                builder: (context, snapshot) {
+                                  final icon = snapshot.data;
+                                  if (icon == null) return Icon(Icons.android, size: 42, color: tokens.icon);
+                                  return Image.memory(
+                                    icon,
+                                    fit: BoxFit.contain,
+                                    cacheWidth: 96,
+                                    cacheHeight: 96,
+                                    gaplessPlayback: true,
+                                  );
+                                },
+                              ),
+                      ),
                     ),
                   ),
-                ),
-                SizedBox(
-                  height: 13,
-                  width: double.infinity,
-                  child: FittedBox(
-                    fit: BoxFit.scaleDown,
-                    child: Text(app.appName, maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, style: nameStyle),
+                  SizedBox(
+                    height: 13,
+                    width: double.infinity,
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(app.appName, maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, style: nameStyle),
+                    ),
                   ),
-                ),
-                Consumer(
-                  builder: (context, ref) {
-                    final size = ref.watch(apkSizeProvider(app.apkFilePath));
-                    return SizedBox(
-                      height: 12,
-                      child: FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text(
-                          size.maybeWhen(data: (bytes) => bytes.asReadableFileSize, orElse: () => ''),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: sizeStyle,
-                        ),
+                  SizedBox(
+                    height: 12,
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        app.size?.asReadableFileSize ?? '',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: sizeStyle,
                       ),
-                    );
-                  },
-                ),
-              ],
-            ),
-            if (selected)
-              Positioned(
-                top: 1,
-                right: 1,
-                child: Icon(Icons.check_circle, size: 18, color: tokens.primary),
+                    ),
+                  ),
+                ],
               ),
-          ],
+              if (selected)
+                Positioned(
+                  top: 1,
+                  right: 1,
+                  child: Icon(Icons.check_circle, size: 18, color: tokens.primary),
+                ),
+            ],
+          ),
         ),
       ),
     );

@@ -68,6 +68,7 @@ class BrowserSurface extends StatelessWidget {
   final BorderRadiusGeometry borderRadius;
   final BrowserSurfaceStyle? style;
   final Color? color;
+  final bool blur;
 
   const BrowserSurface({
     required this.child,
@@ -76,6 +77,7 @@ class BrowserSurface extends StatelessWidget {
     this.borderRadius = const BorderRadius.all(Radius.circular(16)),
     this.style,
     this.color,
+    this.blur = true,
     super.key,
   });
 
@@ -98,7 +100,7 @@ class BrowserSurface extends StatelessWidget {
       ),
       child: child,
     );
-    if (activeStyle == BrowserSurfaceStyle.clean) return surface;
+    if (activeStyle == BrowserSurfaceStyle.clean || !blur) return surface;
     return ClipRRect(
       borderRadius: borderRadius,
       child: BackdropFilter(
