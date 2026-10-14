@@ -117,15 +117,17 @@ class _InstalledApp {
       size == other.size;
 }
 
-List<int?> _readApkFileLengths(List<String> paths) => [
-  for (final path in paths)
+List<int?> _readApkFileLengths(List<String> paths) {
+  final lengths = <int?>[];
+  for (final path in paths) {
     try {
-      File(path).lengthSync()
+      lengths.add(File(path).lengthSync());
     } on FileSystemException {
-      null
-    },
-];
-
+      lengths.add(null);
+    }
+  }
+  return lengths;
+}
 List<Map<String, Object?>> _sortInstalledApps(Map<String, Object?> input) {
   final apps = (input['apps']! as List<Object?>)
       .map((value) => _InstalledApp.fromJson(Map<String, dynamic>.from(value! as Map)))
