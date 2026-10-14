@@ -1136,3 +1136,28 @@ class _TransferTabState extends State<_TransferTab> with Refena, AutomaticKeepAl
     );
   }
 }
+
+class _AnimatedHeaderAppBar extends StatelessWidget implements PreferredSizeWidget {
+  const _AnimatedHeaderAppBar({
+    required this.animation,
+    required this.child,
+  });
+
+  final Animation<double> animation;
+  final Widget child;
+
+  @override
+  Size get preferredSize => const Size.fromHeight(kToolbarHeight);
+
+  @override
+  Widget build(BuildContext context) {
+    return SizeTransition(
+      sizeFactor: animation,
+      axisAlignment: -1.0,
+      child: SizedBox(
+        height: kToolbarHeight,
+        child: child,
+      ),
+    );
+  }
+}
