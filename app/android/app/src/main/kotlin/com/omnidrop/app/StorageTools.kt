@@ -374,7 +374,19 @@ internal class StorageTools(
                         list.add(entry)
                     }
                 }
-                mainHandler.post { result.success(list) }
+                val seen = HashSet<String>()
+for (existing in list) {
+    val existingPath = existing["path"] as? String
+    if (existingPath != null) seen.add(existingPath)
+}
+val scanned = ArrayList<Map<String, Any>>()
+scanForApks(Environment.getExternalStorageDirectory(), 0, scanned)
+for (found in scanned) {
+    val foundPath = found["path"] as? String
+    if (foundPath != null && list.size < 500 && seen.add(foundPath)) list.add(found)
+}
+list.sortByDescending { (it["modified"] as? Long) ?: 0L }
+mainHandler.post { result.success(list) }
             } catch (t: Throwable) {
                 val message = t.message ?: t.javaClass.simpleName
                 mainHandler.post { result.error("APK_SCAN_FAILED", message, null) }
@@ -382,6 +394,31 @@ internal class StorageTools(
         }
     }
 
+   private fun scanForApks(dir: File, depth: Int, out: ArrayList<Map<String, Any>>) {
+        if (depth > 6 || out.size >= 500) return
+        val children: Array<File>? = try {
+            dir.listFiles()
+        } catch (t: Throwable) {
+            null
+        }
+        if (children == null) return
+        for (child in children) {
+            if (out.size >= 500) return
+            val name = child.name
+            if (child.isDirectory) {
+                if (depth == 0 && name == "Android") continue
+                if (name.startsWith(".")) continue
+                scanForApks(child, depth + 1, out)
+            } else if (name.endsWith(".apk", ignoreCase = true)) {
+                val entry = HashMap<String, Any>()
+                entry["path"] = child.absolutePath
+                entry["name"] = name
+                entry["size"] = child.length()
+                entry["modified"] = child.lastModified() / 1000
+                out.add(entry)
+            }
+        }
+        }
     private fun getApkInfo(call: MethodCall, result: MethodChannel.Result) {
         val path = call.argument<String>("path")
         if (path.isNullOrEmpty()) {
